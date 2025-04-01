@@ -98,19 +98,20 @@ def plot_planes_with_mesh(mesh, plane_origins, plane_normals):
 	plt.show()
 
 
-# Load the model
-mesh = trimesh.load_mesh("./tests/Benchmark_v.3.STL")
-camera_position = np.array([0, 0, 1])
-camera_direction = np.array([0, 0, -1])
-# slice_mesh(
-# 	mesh, num_slices=100, camera_pos=camera_position, camera_dir=camera_direction
-# )
+def test():
+  print("Called from server")
 
 
-# Define example planes and plot
-num_slices = 10
-plane_origins = [
-	camera_position + i * 0.2 * camera_direction for i in range(num_slices)
-]
-plane_normals = [camera_direction] * num_slices
-plot_planes_with_mesh(mesh, plane_origins, plane_normals)
+if __name__ == "main":
+  # Load the model
+  mesh = trimesh.load_mesh("./tests/Benchmark_v.3.STL")
+  camera_position = np.array([0, 0, 1])
+  camera_direction = np.array([0, 0, -1])
+
+  # Define example planes and plot
+  num_slices = 10
+  plane_origins = [
+   	camera_position + i * 0.2 * camera_direction for i in range(num_slices)
+  ]
+  plane_normals = [camera_direction] * num_slices
+  plot_planes_with_mesh(mesh, plane_origins, plane_normals)
