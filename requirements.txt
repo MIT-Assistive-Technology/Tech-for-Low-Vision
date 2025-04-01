@@ -1,0 +1,5 @@
+trimesh
+numpy
+matplotlib
+scipy
+flask
