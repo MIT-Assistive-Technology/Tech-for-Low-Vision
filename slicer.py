@@ -1,7 +1,6 @@
 import trimesh
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.spatial import KDTree
 
 
 def points_to_image(points, resolution=(256, 256)):
@@ -75,7 +74,7 @@ def plot_planes_with_mesh(mesh, plane_origins, plane_normals):
 
 	# normalize mesh
 	mesh = normalize_mesh(mesh)
- 
+
 	# Plot mesh
 	ax.plot_trisurf(
 		mesh.vertices[:, 0],
