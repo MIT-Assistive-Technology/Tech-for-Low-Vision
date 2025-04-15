@@ -42,6 +42,25 @@ def path2d_to_image(path: trimesh.path.path.Path2D, width=60, height=40) -> np.n
 	# Get the bounds of the path
 	minx, miny = path.bounds[0]
 	maxx, maxy = path.bounds[1]
+	bounds = mesh.bounds
+	min_proj = np.dot(bounds[0], camera_dir)
+	max_proj = np.dot(bounds[1], camera_dir)
+	planes = np.linspace(min_proj, max_proj, num_slices)
+	print(planes)
+
+	for i, d in enumerate(planes):
+		plane_origin = camera_pos + d * camera_dir
+		slice_mesh = mesh.section(plane_origin=plane_origin, plane_normal=camera_dir)
+		print("NOOGLE")
+		if slice_mesh:
+			slice_2D = slice_mesh.to_2D()[0]
+			print("GOOGLE")
+			points = slice_2D.vertices[:, :2]
+			# plot points on a 2D plane in matplotlib
+			plt.scatter(points[:, 0], points[:, 1])
+			plt.title(f"Slice {i+1}/{num_slices}")
+			plt.axis("off")
+			plt.show(block=True)
 
 	# Compute scale and translation to fit path in the image
 	scale_x = width / (maxx - minx)
@@ -227,17 +246,18 @@ def plot_planes_with_mesh(mesh, plane_origins, plane_normals):
 	plt.show()
 
 # Load the model
-# mesh = trimesh.load_mesh("./tests/10mm_test_cube.stl")
-mesh = trimesh.load("./tests/kitchen_asset_3d_brandable_ceramic_mug.glb", force="mesh")
-# normalize mesh and center it around 0,0
-mesh = normalize_mesh(mesh)
-camera_position = np.array([[0, 5, 0]])
-# find the direction that points to the origin
-camera_direction = 0 - camera_position
-camera_direction = camera_direction / np.linalg.norm(camera_direction)
+if __name__ == "main":
+	# mesh = trimesh.load_mesh("./tests/10mm_test_cube.stl")
+	mesh = trimesh.load("./tests/kitchen_asset_3d_brandable_ceramic_mug.glb", force="mesh")
+	# normalize mesh and center it around 0,0
+	mesh = normalize_mesh(mesh)
+	camera_position = np.array([[0, 5, 0]])
+	# find the direction that points to the origin
+	camera_direction = 0 - camera_position
+	camera_direction = camera_direction / np.linalg.norm(camera_direction)
 
 
-slices = slice_mesh(
-	mesh, num_slices=10, camera_pos=camera_position, camera_dir=camera_direction
-)
-plot_slices(slices)
+	slices = slice_mesh(
+		mesh, num_slices=10, camera_pos=camera_position, camera_dir=camera_direction
+	)
+	plot_slices(slices)
