@@ -82,6 +82,7 @@
             pythonPackages.flask
             pythonPackages.rtree
             pythonPackages.pillow
+            pythonPackages.pyserial
           ];
         };
 
