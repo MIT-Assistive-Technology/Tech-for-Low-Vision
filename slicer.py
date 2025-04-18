@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
@@ -8,7 +10,9 @@ epsilon = 1e-6  # avoid division by zero when normalizing a range of zero
 normalize = lambda grid: lambda min: lambda max: (grid - min) / (max - min + epsilon)
 
 
-def points_to_image(points, resolution=(256, 256)):
+def points_to_image(
+    points: np.ndarray, resolution: Tuple[int, int] = (256, 256)
+) -> np.ndarray:
     """Convert an x by 2 matrix into an image matrix."""
     # Guard condition
     if empty(points):
