@@ -228,10 +228,7 @@ def test():
 
 if __name__ == "__main__":
     # Load the model
-    # mesh = trimesh.load_mesh("./tests/10mm_test_cube.stl")
-    mesh = trimesh.load(
-        "./tests/kitchen_asset_3d_brandable_ceramic_mug.glb", force="mesh"
-    )
+    mesh = trimesh.load("./tests/mug.glb", force="mesh")
     # normalize mesh and center it around 0,0
     mesh = normalize_mesh(mesh)
     camera_position = np.array([[0, 5, 0]])
