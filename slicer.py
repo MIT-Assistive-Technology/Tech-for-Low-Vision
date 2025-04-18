@@ -3,10 +3,15 @@ import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
 
+empty = lambda l: len(l) == 0
+epsilon = 1e-6  # avoid division by zero when normalizing a range of zero
+normalize = lambda grid: lambda min: lambda max: (grid - min) / (max - min + epsilon)
+
 
 def points_to_image(points, resolution=(256, 256)):
     """Convert an x by 2 matrix into an image matrix."""
-    if len(points) == 0:
+    # Guard condition
+    if empty(points):
         return np.zeros(resolution)
 
     points = np.array(points)
@@ -14,12 +19,14 @@ def points_to_image(points, resolution=(256, 256)):
     max_vals = points.max(axis=0)
 
     # Normalize points to fit in the image grid
-    normalized_points = (points - min_vals) / (max_vals - min_vals + 1e-6)
+    normalized_points = normalize(points)(min_vals)(max_vals)
     pixel_coords = (normalized_points * (np.array(resolution) - 1)).astype(int)
 
     image = np.zeros(resolution)
-    for x, y in pixel_coords:
-        image[y, x] = 1  # Mark points in the image matrix
+    ones = np.ones(pixel_coords.shape[0])
+    image[pixel_coords[:, 0], pixel_coords[:, 1]] = (
+        ones  # mark points in the image matrix
+    )
 
     return image
 
