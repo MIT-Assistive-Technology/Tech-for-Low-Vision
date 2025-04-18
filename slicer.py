@@ -102,7 +102,7 @@ def test():
     print("Called from server")
 
 
-if __name__ == "main":
+if __name__ == "__main__":
     # Load the model
     mesh = trimesh.load_mesh("./tests/Benchmark_v.3.STL")
     camera_position = np.array([0, 0, 1])
