@@ -80,6 +80,7 @@
             pythonPackages.matplotlib
             pythonPackages.scipy
             pythonPackages.flask
+            pythonPackages.rtree
           ];
         };
 
