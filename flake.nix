@@ -81,6 +81,7 @@
             pythonPackages.scipy
             pythonPackages.flask
             pythonPackages.rtree
+            pythonPackages.pillow
           ];
         };
 
