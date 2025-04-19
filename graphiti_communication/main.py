@@ -1,25 +1,26 @@
-import serial
 import time
-from graphiticommands import *
+
+import serial
+from graphiticommands import enable_touch_mode
 
 # Configure and open the serial port
-ser = serial.Serial(
-    port='COM3',  # Compatible with windows, Change to your serial port (e.g., '/dev/ttyUSB0' on Linux, 'COM3' on Windows)
+port = serial.Serial(
+    port="COM3",  # Compatible with windows, Change to your serial port (e.g., '/dev/ttyUSB0' on Linux, 'COM3' on Windows)
     baudrate=115200,
-    timeout=2 
+    timeout=2,
 )
 
 # Ensure the port is open
-if ser.is_open:
-    print(f"Connected to {ser.name}")
+if port.is_open:
+    print(f"Connected to {port.name}")
 
 # Send a message
-message = enable_touch_mode()
-ser.write(message)
+message = enable_touch_mode().encode()
+port.write(message)
 
 # Read a response (if any)
 time.sleep(2)
-response = ser.readline() 
+response = port.readline()
 print(f"Received: {response}")
 
-ser.close()
+port.close()
