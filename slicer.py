@@ -1,3 +1,8 @@
+import hashlib
+import os
+import pickle
+import shutil
+from pathlib import Path
 from typing import Tuple
 
 import matplotlib.pyplot as plt
@@ -5,10 +10,17 @@ import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
 
+compose = lambda f, g: lambda x: f(g(x))
 empty = lambda l: len(l) == 0
 lerp = lambda t: lambda a: lambda b: (b - a) * t + a
 epsilon = 1e-6  # avoid division by zero when normalizing a range of zero
+max_slices = 100  # maximuim slice precision for caching
+max_cache = 100  # maximum number of viewpoints to cache
 normalize = lambda grid: lambda min: lambda max: (grid - min) / (max - min + epsilon)
+norm = lambda v: v / np.linalg.norm(v)
+pull = lambda f: trimesh.load(f, force="mesh")
+sha256 = lambda s: hashlib.sha256(s).hexdigest()
+hashify = compose(sha256, pickle.dumps)
 
 
 def points_to_image(
@@ -91,6 +103,7 @@ def slice_mesh(
     num_slices: int,
     camera_pos: np.ndarray,
     camera_dir: np.ndarray,
+    disp=True,
 ):
     # get closest and furthest distances from the camera to the mesh given the camera position and direction
 
@@ -130,7 +143,8 @@ def slice_mesh(
     intersections = []
 
     # plot the mesh and all planes
-    plot_planes_with_mesh(mesh, plane_origins, plane_normals)
+    if disp:
+        plot_planes_with_mesh(mesh, plane_origins, plane_normals)
 
     for i in range(num_slices):
         intersection_path = find_2d_intersection(
@@ -158,10 +172,18 @@ def find_2d_intersection(
     # Check if intersection was found
     if section is not None:
         # You can project it to 2D (if desired), or work with 3D paths
-        slice_2D, _ = section.to_planar()
+        slice_2D, _ = section.to_2D()
         return slice_2D
     else:
         print("Empty cross section")
+
+
+def save_slice(image, path: str):
+    """Save single slice image"""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    ax.imshow(image, cmap="gray")
+    ax.axis("off")
+    plt.savefig(f"{path}.png", bbox_inches="tight", pad_inches=0)
 
 
 def plot_slices(images):
@@ -238,15 +260,80 @@ def plot_planes_with_mesh(mesh, plane_origins, plane_normals):
     plt.show()
 
 
+global_cache = "cache"
+get_cache = lambda n: f"{global_cache}/{n}"
+cache_entry = lambda entry: hashify(
+    {"file": entry[0], "pose": entry[1], "dir": entry[2]}
+)
+
+
+# create cache directory for slices from specific viewpoint
+def cache(slices: list, dirname: str, n: int):
+    cachedir = get_cache(dirname)
+    os.makedirs(cachedir, exist_ok=True)
+    for i, slice in enumerate(slices):
+        save_slice(slice, f"{cachedir}/{int(i / n * max_slices)}")
+
+
+# normalize mesh and center it around 0,0 after pulling it from file source
+load = compose(normalize_mesh, pull)
+
+
+# generate cross sections given variable parameters, then cache images
+def generate(file: str, pose: np.ndarray, dir: np.ndarray, n: int):
+    mesh: trimesh.Trimesh = load(file)
+    angle = norm(dir)
+    slices = slice_mesh(
+        mesh, num_slices=n, camera_pos=pose, camera_dir=angle, disp=False
+    )
+    cache(slices, cache_entry((file, pose, dir)), n)
+
+
+# search cache for specific file
+def search_cache_file(dir: str, p: float) -> str | None:
+    id = int(p * max_slices)
+    path = f"{dir}/{id}.png"
+    return path if os.path.exists(path) else None
+
+
+# search cache
+def search_cache(file: str, pose: np.ndarray, dir: np.ndarray, p: float) -> str | None:
+    dirname = cache_entry((file, pose, dir))
+    cachedir = get_cache(dirname)
+    return search_cache_file(cachedir, p) if os.path.isdir(cachedir) else None
+
+
+# retrieve pre-generated slices or generate a new batch if necessary
+def retrieve(file: str, pose: np.ndarray, dir: np.ndarray, n: int, i: int) -> str:
+    res = search_cache(file, pose, dir, i / n)
+    if res is not None:
+        return res
+    else:
+        generate(file, pose, dir, n)
+        return retrieve(file, pose, dir, n, i)
+
+
 def test():
     print("Called from server")
 
 
+def prune(subdirs: list[Path]):
+    subdirs.sort(key=lambda p: p.stat().st_ctime)
+    targeted = subdirs[max_cache:]
+    for target in targeted:
+        shutil.rmtree(target)
+
+
+# clean cache by deleting old directories if exceeding max number of viewpoints
+def clean():
+    subdirs = [p for p in Path(global_cache).iterdir() if p.is_dir()]
+    if len(subdirs) > max_cache:
+        prune(subdirs)
+
+
 if __name__ == "__main__":
     # Load the model
-    mesh = trimesh.load("./tests/mug.glb", force="mesh")
-    # normalize mesh and center it around 0,0
-    mesh = normalize_mesh(mesh)
+    mesh = load("./tests/mug.glb")
     camera_position = np.array([[0, 5, 0]])
     # find the direction that points to the origin
     camera_direction = 0 - camera_position
