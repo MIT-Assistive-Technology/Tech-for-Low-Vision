@@ -6,6 +6,7 @@ import trimesh
 from PIL import Image, ImageDraw
 
 empty = lambda l: len(l) == 0
+lerp = lambda t: lambda a: lambda b: (b - a) * t + a
 epsilon = 1e-6  # avoid division by zero when normalizing a range of zero
 normalize = lambda grid: lambda min: lambda max: (grid - min) / (max - min + epsilon)
 
@@ -52,7 +53,9 @@ def path2d_to_image(path, width=60, height=40) -> np.ndarray:
     # Compute scale and translation to fit path in the image
     scale_x = width / (maxx - minx)
     scale_y = height / (maxy - miny)
-    scale = min(scale_x, scale_y)  # Preserve aspect ratio
+    scale = min(
+        scale_x, scale_y
+    )  # Preserve aspect ratio (use same scale in all directions)
 
     # Translate and scale vertices to image coordinates
     transformed = (path.vertices - [minx, miny]) * scale
@@ -83,7 +86,12 @@ def path2d_to_image(path, width=60, height=40) -> np.ndarray:
     return np.array(img)
 
 
-def slice_mesh(mesh: trimesh.Trimesh, num_slices, camera_pos, camera_dir):
+def slice_mesh(
+    mesh: trimesh.Trimesh,
+    num_slices: int,
+    camera_pos: np.ndarray,
+    camera_dir: np.ndarray,
+):
     # get closest and furthest distances from the camera to the mesh given the camera position and direction
 
     # shoot a ray from the camera position in the direction of the camera direction and figure out the distance
@@ -103,23 +111,19 @@ def slice_mesh(mesh: trimesh.Trimesh, num_slices, camera_pos, camera_dir):
     last_distances = np.linalg.norm(last_intersect - camera_pos)
 
     plane_origins = []
+
     # generate x plane origin coordinates in the same direction of the camera except all of their distances must range from first_distance to last_distance
     # for each slice, generate a plane origin at the camera direction
     for i in range(num_slices):
         # generate a plane origin at the camera direction
         plane_origins.append(
             camera_pos
-            + (first_distances + i * (last_distances - first_distances) / num_slices)
-            * camera_dir
+            + lerp(i / num_slices)(first_distances)(last_distances) * camera_dir
         )
 
     # calculate the intersection of each one of the plane origin given they're all pointing in the camera dir
-    plane_normals = []
-
-    for i in range(num_slices):
-        # for each slice, generate a plane normal at the camera direction
-        plane_normals.append(camera_dir)
-    plane_normals = np.array(plane_normals)
+    # for each slice, generate a plane normal at the camera direction
+    plane_normals = np.array(num_slices * [camera_dir])
     plane_origins = np.array(plane_origins)
 
     # get the intersection of the mesh with each one of the planes
@@ -144,10 +148,11 @@ def slice_mesh(mesh: trimesh.Trimesh, num_slices, camera_pos, camera_dir):
     return intersections
 
 
-def find_2d_intersection(mesh: trimesh.Trimesh, plane_origin, plane_normal):
+def find_2d_intersection(
+    mesh: trimesh.Trimesh, plane_origin: np.ndarray, plane_normal: np.ndarray
+):
     # Compute the intersection (section) of the plane and the mesh
     # This returns a Path3D object representing the intersection curve(s)
-    print(plane_origin, plane_normal)
     section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
 
     # Check if intersection was found
@@ -156,7 +161,7 @@ def find_2d_intersection(mesh: trimesh.Trimesh, plane_origin, plane_normal):
         slice_2D, _ = section.to_planar()
         return slice_2D
     else:
-        print("NOTHING")
+        print("Empty cross section")
 
 
 def plot_slices(images):
