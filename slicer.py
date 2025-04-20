@@ -306,7 +306,9 @@ def search_cache(
 
 
 # retrieve pre-generated slices or generate a new batch if necessary
-def retrieve(file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int, max_retries=5) -> str:
+def retrieve(
+    file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int, max_retries=5
+) -> str:
     if max_retries <= 0:
         raise RuntimeError("Failed to retrieve slice after maximum retries.")
     res = search_cache(file, pose, directory, i / n)
