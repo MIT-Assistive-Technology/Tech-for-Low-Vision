@@ -1,31 +1,35 @@
 module Main exposing (..)
 
 import Browser
-import Html exposing (button, div, text)
-import Html.Events exposing (onClick)
+import Html exposing (Html, div, text)
 
 
-main =
-    Browser.sandbox { init = 0, update = update, view = view }
+type alias Flags =
+    ()
+
+
+type alias Model =
+    {}
 
 
 type Msg
-    = Increment
-    | Decrement
+    = None
 
 
+main : Program Flags Model Msg
+main =
+    Browser.sandbox { init = {}, update = update, view = view }
+
+
+update : Msg -> Model -> Model
 update msg model =
     case msg of
-        Increment ->
-            model + 1
-
-        Decrement ->
-            model - 1
+        None ->
+            model
 
 
+view : Model -> Html Msg
 view model =
     div []
-        [ button [ onClick Decrement ] [ text "-" ]
-        , div [] [ text (String.fromInt model) ]
-        , button [ onClick Increment ] [ text "+" ]
+        [ text "Placeholder text"
         ]
