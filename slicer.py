@@ -280,39 +280,41 @@ load = compose(normalize_mesh, pull)
 
 
 # generate cross sections given variable parameters, then cache images
-def generate(file: str, pose: np.ndarray, dir: np.ndarray, n: int):
+def generate(file: str, pose: np.ndarray, directory: np.ndarray, n: int):
     mesh: trimesh.Trimesh = load(file)
-    angle = norm(dir)
+    angle = norm(directory)
     slices = slice_mesh(
         mesh, num_slices=n, camera_pos=pose, camera_dir=angle, disp=False
     )
-    cache(slices, cache_entry((file, pose, dir)), n)
+    cache(slices, cache_entry((file, pose, directory)), n)
 
 
 # search cache for specific file
-def search_cache_file(dir: str, p: float) -> str | None:
+def search_cache_file(directory: str, p: float) -> str | None:
     id = int(p * max_slices)
-    path = f"{dir}/{id}.png"
+    path = f"{directory}/{id}.png"
     return path if os.path.exists(path) else None
 
 
 # search cache
-def search_cache(file: str, pose: np.ndarray, dir: np.ndarray, p: float) -> str | None:
-    dirname = cache_entry((file, pose, dir))
+def search_cache(
+    file: str, pose: np.ndarray, directory: np.ndarray, p: float
+) -> str | None:
+    dirname = cache_entry((file, pose, directory))
     cachedir = get_cache(dirname)
     return search_cache_file(cachedir, p) if os.path.isdir(cachedir) else None
 
 
 # retrieve pre-generated slices or generate a new batch if necessary
-def retrieve(file: str, pose: np.ndarray, dir: np.ndarray, n: int, i: int, max_retries: int = 5) -> str:
+def retrieve(file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int, max_retries=5) -> str:
     if max_retries <= 0:
         raise RuntimeError("Failed to retrieve slice after maximum retries.")
-    res = search_cache(file, pose, dir, i / n)
+    res = search_cache(file, pose, directory, i / n)
     if res is not None:
         return res
     else:
-        generate(file, pose, dir, n)
-        return retrieve(file, pose, dir, n, i, max_retries - 1)
+        generate(file, pose, directory, n)
+        return retrieve(file, pose, directory, n, i, max_retries - 1)
 
 
 def test():
