@@ -260,7 +260,7 @@ def plot_planes_with_mesh(mesh, plane_origins, plane_normals):
     plt.show()
 
 
-global_cache = "cache"
+global_cache = "serve/assets/cache"
 get_cache = lambda n: f"{global_cache}/{n}"
 cache_entry = lambda entry: hashify(
     {"file": entry[0], "pose": entry[1], "dir": entry[2]}
