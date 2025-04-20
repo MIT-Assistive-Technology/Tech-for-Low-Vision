@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    mkElmDerivation.url = "github:jeslie0/mkElmDerivation";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix";
   };
 
@@ -12,12 +13,16 @@
       self,
       nixpkgs,
       flake-utils,
+      mkElmDerivation,
       pre-commit-hooks,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          overlays = [ mkElmDerivation.overlays.mkElmDerivation ];
+          inherit system;
+        };
         python = pkgs.python312;
         pythonPackages = python.pkgs;
       in
@@ -67,6 +72,13 @@
               end-of-file-fixer.enable = true;
               mixed-line-endings.enable = true;
               trim-trailing-whitespace.enable = true;
+              elm-format.enable = true;
+              check-yaml.enable = true;
+              yamlfmt.enable = true;
+              yamllint.enable = true;
+              check-json.enable = true;
+              pretty-format-json.enable = true;
+              tagref.enable = true;
             };
           };
         };
@@ -74,6 +86,7 @@
         devShells.default = pkgs.mkShell {
           inherit (self.checks.${system}.pre-commit-check) shellHook;
           buildInputs = self.checks.${system}.pre-commit-check.enabledPackages ++ [
+            # Python backend
             python
             pythonPackages.trimesh
             pythonPackages.numpy
@@ -83,6 +96,13 @@
             pythonPackages.rtree
             pythonPackages.pillow
             pythonPackages.pyserial
+
+            # Elm frontend
+            pkgs.elmPackages.elm
+            pkgs.elmPackages.elm-review
+            pkgs.elmPackages.elm-json
+            pkgs.live-server
+            pkgs.entr
           ];
         };
 
@@ -91,13 +111,35 @@
             let
               runner = pkgs.writeScriptBin "run" ''
                 #!${pkgs.bash}/bin/bash
-                ${pythonPackages.flask}/bin/flask run
+                trap 'kill 0' SIGINT
+                ${pkgs.bash}/bin/bash serve/watch.sh &
+                ${pkgs.live-server}/bin/live-server serve -H localhost -p 3000 &
+                ${pythonPackages.flask}/bin/flask run &
+                wait
               '';
             in
             {
               type = "app";
               program = "${runner}/bin/run";
             };
+        };
+
+        packages = {
+          default = pkgs.mkElmDerivation {
+            name = "tech-for-low-vision";
+            src = ./serve;
+            elmJson = serve/elm.json;
+            nativeBuildInputs = [ pkgs.elmPackages.elm ];
+            buildPhase = ''
+              elm make src/Main.elm --output Main.js --optimize
+            '';
+            installPhase = ''
+              mkdir -p $out/dist/elm
+              cp Main.js $out/dist/elm
+              sed 's/..compiled\/Main.js/\/elm\/Main.js/' src/index.html > $out/dist/index.html
+              cp -r assets $out/dist/assets
+            '';
+          };
         };
 
         formatter = nixpkgs.legacyPackages.${system}.nixfmt-rfc-style;
