@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 from flask import Flask, request
 
@@ -52,10 +54,13 @@ def get():
     if n is None or i is None:
         return "error; need `n` and `i`"
 
-    return retrieve(
-        file,
-        np.array([fmap(float, [poseX, poseY, poseZ])]),  # pyright: ignore
-        np.array([fmap(float, [dirX, dirY, dirZ])]),  # pyright: ignore
-        int(n),
-        int(i),
+    path = "/".join(
+        retrieve(
+            f"models/{file}",
+            np.array([fmap(float)([poseX, poseY, poseZ])]),  # pyright: ignore
+            np.array([fmap(float)([dirX, dirY, dirZ])]),  # pyright: ignore
+            int(n),
+            int(i),
+        ).split("/")[1:]
     )
+    return json.dumps({"path": path})

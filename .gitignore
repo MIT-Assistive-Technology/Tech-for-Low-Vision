@@ -185,3 +185,6 @@ result-*
 
 # Project-specific cache
 cache
+
+# Project-specific model directory
+models

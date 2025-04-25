@@ -101,7 +101,7 @@
             pkgs.elmPackages.elm
             pkgs.elmPackages.elm-review
             pkgs.elmPackages.elm-json
-            pkgs.live-server
+            pkgs.static-server
             pkgs.entr
           ];
         };
@@ -113,7 +113,7 @@
                 #!${pkgs.bash}/bin/bash
                 trap 'kill 0' SIGINT
                 ${pkgs.bash}/bin/bash serve/watch.sh &
-                ${pkgs.live-server}/bin/live-server serve -H localhost -p 3000 &
+                ${pkgs.static-server}/bin/static-server -host localhost -port 3000 serve &
                 ${pythonPackages.flask}/bin/flask run &
                 wait
               '';

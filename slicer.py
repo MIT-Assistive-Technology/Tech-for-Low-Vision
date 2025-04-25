@@ -127,7 +127,7 @@ def slice_mesh(
 
     # generate x plane origin coordinates in the same direction of the camera except all of their distances must range from first_distance to last_distance
     # for each slice, generate a plane origin at the camera direction
-    for i in range(num_slices):
+    for i in range(num_slices + 1):
         # generate a plane origin at the camera direction
         plane_origins.append(
             camera_pos
@@ -136,7 +136,7 @@ def slice_mesh(
 
     # calculate the intersection of each one of the plane origin given they're all pointing in the camera dir
     # for each slice, generate a plane normal at the camera direction
-    plane_normals = np.array(num_slices * [camera_dir])
+    plane_normals = np.array((num_slices + 1) * [camera_dir])
     plane_origins = np.array(plane_origins)
 
     # get the intersection of the mesh with each one of the planes
@@ -146,7 +146,7 @@ def slice_mesh(
     if disp:
         plot_planes_with_mesh(mesh, plane_origins, plane_normals)
 
-    for i in range(num_slices):
+    for i in range(num_slices + 1):
         intersection_path = find_2d_intersection(
             plane_origin=plane_origins[i].reshape((3,)),
             plane_normal=plane_normals[i].reshape((3,)),
@@ -184,6 +184,7 @@ def save_slice(image, path: str):
     ax.imshow(image, cmap="gray")
     ax.axis("off")
     plt.savefig(f"{path}.png", bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
 
 
 def plot_slices(images):
