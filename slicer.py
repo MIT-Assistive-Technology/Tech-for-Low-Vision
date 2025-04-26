@@ -272,8 +272,8 @@ cache_entry = lambda entry: hashify(
 def cache(slices: list, dirname: str, n: int):
     cachedir = get_cache(dirname)
     os.makedirs(cachedir, exist_ok=True)
-    for i, slice in enumerate(slices):
-        save_slice(slice, f"{cachedir}/{int(i / n * max_slices)}")
+    for i, sliced in enumerate(slices):
+        save_slice(sliced, f"{cachedir}/{int(i / n * max_slices)}")
 
 
 # normalize mesh and center it around 0,0 after pulling it from file source
