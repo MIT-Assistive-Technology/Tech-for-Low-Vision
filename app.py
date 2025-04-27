@@ -2,10 +2,12 @@ import json
 
 import numpy as np
 from flask import Flask, request
+from flask_cors import CORS
 
 from slicer import clean, retrieve, test
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 
 fmap = lambda f: lambda l: [f(x) for x in l]

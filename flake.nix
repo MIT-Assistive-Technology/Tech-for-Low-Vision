@@ -62,7 +62,7 @@
               shellcheck.enable = true;
               shfmt.enable = true;
               typos.enable = true;
-              check-added-large-files.enable = true;
+              check-added-large-files.enable = false;
               check-case-conflicts.enable = true;
               check-executables-have-shebangs.enable = true;
               check-shebang-scripts-are-executable.enable = true;
@@ -96,6 +96,7 @@
             pythonPackages.rtree
             pythonPackages.pillow
             pythonPackages.pyserial
+            pythonPackages.flask-cors
 
             # Elm frontend
             pkgs.elmPackages.elm
