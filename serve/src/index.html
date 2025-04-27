@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D renderer | TfLV</title>
+    <link rel="icon" href="../assets/favicon.svg" type="image/x-icon" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="../compiled/Main.js"></script>
+    <script>
+      var app = Elm.Main.init({
+        node: document.getElementById("app"),
+        flags: [
+          window.innerWidth,
+          window.innerHeight,
+          window.location.pathname,
+        ],
+      });
+    </script>
+  </body>
+</html>
