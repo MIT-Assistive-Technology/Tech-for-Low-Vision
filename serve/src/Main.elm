@@ -74,14 +74,49 @@ defaults flags =
     )
 
 
+type alias Vec3 =
+    ( Float, Float, Float )
+
+
+cross : Vec3 -> Vec3 -> Vec3
+cross u v =
+    let
+        ( u_x, u_y, u_z ) =
+            u
+
+        ( v_x, v_y, v_z ) =
+            v
+    in
+    ( u_y * v_z - u_z * v_y, u_z * v_x - u_x * v_z, u_x * v_y - u_y * v_x )
+
+
+viewXVec : ( Float, Float, Float )
+viewXVec =
+    ( 1 / 2, 1, 1 )
+
+
+viewYVec : ( Float, Float, Float )
+viewYVec =
+    ( 1 / 2, 3 / 4, -1 )
+
+
+viewZVec : ( Float, Float, Float )
+viewZVec =
+    cross viewXVec viewYVec
+
+
 params : Params
 params =
-    { poseX = 0
-    , poseY = 0
-    , poseZ = 0
-    , dirX = 0
-    , dirY = 0
-    , dirZ = 1
+    let
+        ( xDirX, xDirY, xDirZ ) =
+            viewXVec
+    in
+    { poseX = 1 / 8
+    , poseY = -3 / 8
+    , poseZ = 1 / 4
+    , dirX = xDirX
+    , dirY = xDirY
+    , dirZ = xDirZ
     , n = 10
     , i = 0
     }
@@ -232,15 +267,27 @@ update msg model =
 
         dirX : Params -> Params
         dirX p =
-            { p | dirX = 1, dirY = 0, dirZ = 0 }
+            let
+                ( xDirX, xDirY, xDirZ ) =
+                    viewXVec
+            in
+            { p | dirX = xDirX, dirY = xDirY, dirZ = xDirZ }
 
         dirY : Params -> Params
         dirY p =
-            { p | dirX = 0, dirY = 1, dirZ = 0 }
+            let
+                ( yDirX, yDirY, yDirZ ) =
+                    viewYVec
+            in
+            { p | dirX = yDirX, dirY = yDirY, dirZ = yDirZ }
 
         dirZ : Params -> Params
         dirZ p =
-            { p | dirX = 0, dirY = 0, dirZ = 1 }
+            let
+                ( zDirX, zDirY, zDirZ ) =
+                    viewZVec
+            in
+            { p | dirX = zDirX, dirY = zDirY, dirZ = zDirZ }
     in
     case msg of
         None ->
@@ -495,15 +542,15 @@ displayBox model =
 
                 dx : Float
                 dx =
-                    abs mp.dirX
+                    mp.dirX
 
                 dy : Float
                 dy =
-                    abs mp.dirY
+                    mp.dirY
 
                 dz : Float
                 dz =
-                    abs mp.dirZ
+                    mp.dirZ
 
                 imax : Float -> Float -> Float -> Order
                 imax a b c =
@@ -520,9 +567,47 @@ displayBox model =
                     else
                         Third
 
+                vec : Vec3
+                vec =
+                    ( dx, dy, dz )
+
+                dot3 : Vec3 -> Vec3 -> Float
+                dot3 u v =
+                    let
+                        ( u_x, u_y, u_z ) =
+                            u
+
+                        ( v_x, v_y, v_z ) =
+                            v
+                    in
+                    u_x * v_x + u_y * v_y + u_z * v_z
+
+                norm : Vec3 -> Vec3
+                norm u =
+                    let
+                        ( u_x, u_y, u_z ) =
+                            u
+
+                        mag =
+                            (u_x ^ 2 + u_y ^ 2 + u_z ^ 2) ^ (1 / 2)
+                    in
+                    ( u_x / mag, u_y / mag, u_z / mag )
+
+                xdot : Float
+                xdot =
+                    dot3 vec (norm viewXVec)
+
+                ydot : Float
+                ydot =
+                    dot3 vec (norm viewYVec)
+
+                zdot : Float
+                zdot =
+                    dot3 vec (norm viewZVec)
+
                 dmax : Order
                 dmax =
-                    imax dx dy dz
+                    imax xdot ydot zdot
             in
             case dmax of
                 First ->

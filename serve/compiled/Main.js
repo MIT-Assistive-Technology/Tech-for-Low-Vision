@@ -5078,7 +5078,17 @@ var $elm$json$Json$Decode$andThen = _Json_andThen;
 var $author$project$Main$Input = {$: 'Input'};
 var $elm$core$Platform$Cmd$batch = _Platform_batch;
 var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
-var $author$project$Main$params = {dirX: 0, dirY: 0, dirZ: 1, i: 0, n: 10, poseX: 0, poseY: 0, poseZ: 0};
+var $elm$core$Basics$negate = function (n) {
+	return -n;
+};
+var $author$project$Main$viewXVec = _Utils_Tuple3(1 / 2, 1, 1);
+var $author$project$Main$params = function () {
+	var _v0 = $author$project$Main$viewXVec;
+	var xDirX = _v0.a;
+	var xDirY = _v0.b;
+	var xDirZ = _v0.c;
+	return {dirX: xDirX, dirY: xDirY, dirZ: xDirZ, i: 0, n: 10, poseX: 1 / 8, poseY: (-3) / 8, poseZ: 1 / 4};
+}();
 var $author$project$Main$defaults = function (flags) {
 	var _v0 = flags;
 	var width = _v0.a;
@@ -6530,6 +6540,20 @@ var $author$project$Main$getImage = F2(
 var $author$project$Main$return = function (x) {
 	return _Utils_Tuple2(x, $elm$core$Platform$Cmd$none);
 };
+var $author$project$Main$viewYVec = _Utils_Tuple3(1 / 2, 3 / 4, -1);
+var $author$project$Main$cross = F2(
+	function (u, v) {
+		var _v0 = v;
+		var v_x = _v0.a;
+		var v_y = _v0.b;
+		var v_z = _v0.c;
+		var _v1 = u;
+		var u_x = _v1.a;
+		var u_y = _v1.b;
+		var u_z = _v1.c;
+		return _Utils_Tuple3((u_y * v_z) - (u_z * v_y), (u_z * v_x) - (u_x * v_z), (u_x * v_y) - (u_y * v_x));
+	});
+var $author$project$Main$viewZVec = A2($author$project$Main$cross, $author$project$Main$viewXVec, $author$project$Main$viewYVec);
 var $author$project$Main$update = F2(
 	function (msg, model) {
 		var zUp = function (p) {
@@ -6606,19 +6630,31 @@ var $author$project$Main$update = F2(
 				});
 		};
 		var dirZ = function (p) {
+			var _v8 = $author$project$Main$viewZVec;
+			var zDirX = _v8.a;
+			var zDirY = _v8.b;
+			var zDirZ = _v8.c;
 			return _Utils_update(
 				p,
-				{dirX: 0, dirY: 0, dirZ: 1});
+				{dirX: zDirX, dirY: zDirY, dirZ: zDirZ});
 		};
 		var dirY = function (p) {
+			var _v7 = $author$project$Main$viewYVec;
+			var yDirX = _v7.a;
+			var yDirY = _v7.b;
+			var yDirZ = _v7.c;
 			return _Utils_update(
 				p,
-				{dirX: 0, dirY: 1, dirZ: 0});
+				{dirX: yDirX, dirY: yDirY, dirZ: yDirZ});
 		};
 		var dirX = function (p) {
+			var _v6 = $author$project$Main$viewXVec;
+			var xDirX = _v6.a;
+			var xDirY = _v6.b;
+			var xDirZ = _v6.c;
 			return _Utils_update(
 				p,
-				{dirX: 1, dirY: 0, dirZ: 0});
+				{dirX: xDirX, dirY: xDirY, dirZ: xDirZ});
 		};
 		switch (msg.$) {
 			case 'None':
@@ -6725,12 +6761,6 @@ var $author$project$Main$update = F2(
 var $author$project$Main$First = {$: 'First'};
 var $author$project$Main$Second = {$: 'Second'};
 var $author$project$Main$Third = {$: 'Third'};
-var $elm$core$Basics$negate = function (n) {
-	return -n;
-};
-var $elm$core$Basics$abs = function (n) {
-	return (n < 0) ? (-n) : n;
-};
 var $mdgriffith$elm_ui$Internal$Model$Rgba = F4(
 	function (a, b, c, d) {
 		return {$: 'Rgba', a: a, b: b, c: c, d: d};
@@ -12398,6 +12428,7 @@ var $mdgriffith$elm_ui$Element$paddingEach = function (_v0) {
 				left));
 	}
 };
+var $elm$core$Basics$pow = _Basics_pow;
 var $mdgriffith$elm_ui$Internal$Model$Text = function (a) {
 	return {$: 'Text', a: a};
 };
@@ -12455,15 +12486,51 @@ var $author$project$Main$displayBox = function (model) {
 			$elm$core$Basics$round(100 * num) / 100);
 	};
 	var direction = function (m) {
+		var norm = function (u) {
+			var _v3 = u;
+			var u_x = _v3.a;
+			var u_y = _v3.b;
+			var u_z = _v3.c;
+			var mag = A2(
+				$elm$core$Basics$pow,
+				(A2($elm$core$Basics$pow, u_x, 2) + A2($elm$core$Basics$pow, u_y, 2)) + A2($elm$core$Basics$pow, u_z, 2),
+				1 / 2);
+			return _Utils_Tuple3(u_x / mag, u_y / mag, u_z / mag);
+		};
 		var mp = m.params;
 		var imax = F3(
 			function (a, b, c) {
 				return (_Utils_cmp(a, b) > 0) ? ((_Utils_cmp(a, c) > 0) ? $author$project$Main$First : $author$project$Main$Third) : ((_Utils_cmp(b, c) > 0) ? $author$project$Main$Second : $author$project$Main$Third);
 			});
-		var dz = $elm$core$Basics$abs(mp.dirZ);
-		var dy = $elm$core$Basics$abs(mp.dirY);
-		var dx = $elm$core$Basics$abs(mp.dirX);
-		var dmax = A3(imax, dx, dy, dz);
+		var dz = mp.dirZ;
+		var dy = mp.dirY;
+		var dx = mp.dirX;
+		var vec = _Utils_Tuple3(dx, dy, dz);
+		var dot3 = F2(
+			function (u, v) {
+				var _v1 = v;
+				var v_x = _v1.a;
+				var v_y = _v1.b;
+				var v_z = _v1.c;
+				var _v2 = u;
+				var u_x = _v2.a;
+				var u_y = _v2.b;
+				var u_z = _v2.c;
+				return ((u_x * v_x) + (u_y * v_y)) + (u_z * v_z);
+			});
+		var xdot = A2(
+			dot3,
+			vec,
+			norm($author$project$Main$viewXVec));
+		var ydot = A2(
+			dot3,
+			vec,
+			norm($author$project$Main$viewYVec));
+		var zdot = A2(
+			dot3,
+			vec,
+			norm($author$project$Main$viewZVec));
+		var dmax = A3(imax, xdot, ydot, zdot);
 		switch (dmax.$) {
 			case 'First':
 				return 'X';
