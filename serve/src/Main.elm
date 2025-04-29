@@ -537,8 +537,8 @@ displayBox model =
     column
         [ width (w 100)
         , height (h 110)
-        , Background.color black
-        , Font.color white
+        , Background.color white
+        , Font.color black
         ]
         [ image
             [ centerX

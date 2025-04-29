@@ -12481,8 +12481,8 @@ var $author$project$Main$displayBox = function (model) {
 				w(100)),
 				$mdgriffith$elm_ui$Element$height(
 				h(110)),
-				$mdgriffith$elm_ui$Element$Background$color($author$project$Main$black),
-				$mdgriffith$elm_ui$Element$Font$color($author$project$Main$white)
+				$mdgriffith$elm_ui$Element$Background$color($author$project$Main$white),
+				$mdgriffith$elm_ui$Element$Font$color($author$project$Main$black)
 			]),
 		_List_fromArray(
 			[

@@ -74,7 +74,7 @@ def path2d_to_image(path, width=60, height=40) -> np.ndarray:
     transformed[:, 1] = height - transformed[:, 1]  # Flip Y-axis for image coordinates
 
     # Create a blank image
-    img = Image.new("L", (width, height), color=0)
+    img = Image.new("L", (width, height), color=255)
     draw = ImageDraw.Draw(img)
 
     # Draw each path entity
@@ -88,12 +88,12 @@ def path2d_to_image(path, width=60, height=40) -> np.ndarray:
 
         coords = [tuple(transformed[i]) for i in indices]
         if isinstance(entity, trimesh.path.entities.Line):  # type: ignore[reportAttributeAccessIssue]
-            draw.line(coords, fill=255)
+            draw.line(coords, fill=0, width=5)
         elif isinstance(entity, trimesh.path.entities.Arc):  # type: ignore[reportAttributeAccessIssue]
             # Optional: Handle arc approximation
-            arc = path.discrete(entity)
+            arc = path.discrete(entity, width=5)
             coords = [(p[0], height - p[1]) for p in arc * scale]
-            draw.line(coords, fill=255)
+            draw.line(coords, fill=0, width=5)
 
     return np.array(img)
 
