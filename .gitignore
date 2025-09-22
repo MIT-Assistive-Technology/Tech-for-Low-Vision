@@ -185,3 +185,6 @@ result-*
 
 # Project-specific cache
 cache
+
+Primary.txt
+Secondary.txt
