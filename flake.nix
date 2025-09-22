@@ -93,6 +93,7 @@
             pythonPackages.matplotlib
             pythonPackages.scipy
             pythonPackages.flask
+            pythonPackages.flask-cors
             pythonPackages.rtree
             pythonPackages.pillow
             pythonPackages.pyserial
