@@ -15,6 +15,6 @@ result-*
 
 # ---> Project
 # Ignore compiled elm files
-compiled
+#compiled
 # Ignore hosting-specific files
 /index.html
