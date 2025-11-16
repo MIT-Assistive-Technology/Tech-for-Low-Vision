@@ -16,7 +16,23 @@ from PIL import Image, ImageDraw
 
 import cv2
 
-# --- NEW: timeit DECORATOR ---
+"""
+how to use "visualize" command!!
+
+example command: python slicer.py visualize mug.glb 0 0 2 0 0 -1 100
+The script reads these numbers in a strict order:
+
+0 0 2: This is the Pose (camera_pos).
+It's an (x, y, z) coordinate of where the "camera" (or slicing-plane) starts.
+In this case, it starts at (0, 0, 2), which is 2 units "above" the center of the normalized object.
+
+0 0 -1: This is the Direction (camera_dir).
+It's an (x, y, z) vector of where the camera is looking.
+
+(0, 0, -1) means it's looking straight down the Z-axis.
+100: This is the Number of Slices (n_slices).
+"""
+-
 def timeit(func):
     """A simple decorator to measure function execution time."""
     @functools.wraps(func)

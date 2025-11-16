@@ -6,4 +6,3 @@ pillow
 rtree
 scipy
 trimesh
-pyembree
