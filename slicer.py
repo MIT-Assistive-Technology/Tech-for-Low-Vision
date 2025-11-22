@@ -32,7 +32,7 @@ It's an (x, y, z) vector of where the camera is looking.
 (0, 0, -1) means it's looking straight down the Z-axis.
 100: This is the Number of Slices (n_slices).
 """
--
+
 def timeit(func):
     """A simple decorator to measure function execution time."""
     @functools.wraps(func)
@@ -72,43 +72,60 @@ def normalize_array(arr, min_val, max_val):
     """Normalize array to [0, 1] range."""
     return (arr - min_val) / (max_val - min_val + epsilon)
 
-
 def path2d_to_image(path, width=256, height=256) -> np.ndarray:
-    """Convert 2D path to image using PIL."""
+    """Convert 2D path to filled image using PIL and shapely polygons."""
     if path is None or not hasattr(path, 'bounds') or empty(path.vertices):
+        # Return an all-black image (representing empty "air")
         return np.zeros((width, height))
 
     minx, miny = path.bounds[0]
     maxx, maxy = path.bounds[1]
 
+    # Handle cases where the path is a single point or line
     if abs(maxx - minx) < epsilon or abs(maxy - miny) < epsilon:
-        return np.zeros((width, height))
+        return np.zeros((width, height)) # Return empty image
 
     scale_x = width / (maxx - minx)
     scale_y = height / (maxy - miny)
-    scale = min(scale_x, scale_y) * 0.9
+    scale = min(scale_x, scale_y) * 0.9 # Add some padding
 
     offset_x = (width - (maxx - minx) * scale) / 2
     offset_y = (height - (maxy - miny) * scale) / 2
 
-    transformed = (path.vertices - [minx, miny]) * scale
-    transformed += [offset_x, offset_y]
-    transformed[:, 1] = height - transformed[:, 1]
-
-    img = Image.new("L", (width, height), color=255)
+    # Create a black background ("air")
+    img = Image.new("L", (width, height), color=0)
     draw = ImageDraw.Draw(img)
 
-    for entity in path.entities:
-        indices = getattr(entity, 'points', None)
-        if indices is None:
-            continue
+    # --- THIS IS THE ONLY CHANGE ---
+    # It should be .polygons_full, not .polygons
+    for polygon in path.polygons_full:
+    # --- END CHANGE ---
 
-        coords = [tuple(transformed[i]) for i in indices]
-        if len(coords) >= 2:
-            draw.line(coords, fill=0, width=3)
+        # --- 1. Draw the exterior (solid) ---
+        exterior_coords = np.array(polygon.exterior.coords)
+
+        # Apply the same transformations as before
+        transformed_ext = (exterior_coords - [minx, miny]) * scale
+        transformed_ext += [offset_x, offset_y]
+        transformed_ext[:, 1] = height - transformed_ext[:, 1] # Flip Y-axis
+
+        # Draw the filled exterior shape as white ("solid")
+        draw.polygon([tuple(p) for p in transformed_ext], fill=255)
+
+        # --- 2. Draw the interiors (holes) ---
+        for interior in polygon.interiors:
+            interior_coords = np.array(interior.coords)
+
+            # Apply the same transformations
+            transformed_int = (interior_coords - [minx, miny]) * scale
+            transformed_int += [offset_x, offset_y]
+            transformed_int[:, 1] = height - transformed_int[:, 1] # Flip Y-axis
+
+            # Draw the filled interior shape as black ("air")
+            # This "punches the hole" in the white shape
+            draw.polygon([tuple(p) for p in transformed_int], fill=0)
 
     return np.array(img)
-
 
 def get_mesh_bounds_along_ray(mesh: trimesh.Trimesh, camera_pos: np.ndarray, camera_dir: np.ndarray) -> Tuple[float, float]:
     """Get min and max distances along a ray through the mesh."""
@@ -126,26 +143,41 @@ def get_mesh_bounds_along_ray(mesh: trimesh.Trimesh, camera_pos: np.ndarray, cam
     distances = np.linalg.norm(intersections - camera_pos, axis=1)
     return float(distances.min()), float(distances.max())
 
-
-# --- Worker function for multiprocessing ---
 def _process_slice_worker(plane_origin, mesh, plane_normal):
     """
     Worker function for a single slice.
-    'mesh' and 'plane_normal' will be pre-filled by functools.partial.
+    This version correctly handles all of trimesh's return types.
     """
     try:
         section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
-
         slice_2D = None
-        if section is not None and len(section.vertices) > 0:
-            slice_2D, _ = section.to_2D()
 
+        if section is None:
+            # Case 1: The plane missed the mesh entirely.
+            pass
+        elif hasattr(section, 'to_2D'):
+            # Case 2: It's a Path3D object.
+            if len(section.vertices) > 0:
+                try:
+                    slice_2D, _ = section.to_2D()
+                except Exception as e:
+                    print(f"Slice at {plane_origin}: .to_2D() method failed: {e}", file=sys.stderr)
+        elif hasattr(section, 'outline'):
+            # Case 3: It's a Trimesh object (i.e., a coplanar section).
+            if len(section.vertices) > 0:
+                slice_2D = section.outline() # .outline() returns a Path2D
+        else:
+            # Case 4: It's some other object we don't recognize.
+            print(f"Slice at {plane_origin}: received unknown section type: {type(section)}", file=sys.stderr)
+
+        # Generate the image from the resulting Path2D (or None)
         image = path2d_to_image(slice_2D)
         return image
-    except Exception as e:
-        print(f"Error processing slice at {plane_origin}: {e}", file=sys.stderr)
-        return np.zeros((256, 256))
 
+    except Exception as e:
+        # Catch any other unexpected errors in this worker
+        print(f"FATAL Error processing slice at {plane_origin}: {e}", file=sys.stderr)
+        return np.full((256, 256), 255) # Return a default empty image
 
 @timeit # <-- APPLIED DECORATOR
 def slice_mesh(
