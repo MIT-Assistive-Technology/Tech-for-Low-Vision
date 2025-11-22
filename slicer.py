@@ -2,353 +2,430 @@ import hashlib
 import os
 import pickle
 import shutil
+import sys
+import json
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional, Any
+import time # <-- NEW IMPORT (for timeit)
+import functools # <-- NEW IMPORT (for partial and wraps)
+from concurrent.futures import ProcessPoolExecutor
 
-import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
+import scipy.ndimage as ndimage
 
+import cv2
+
+"""
+how to use "visualize" command!!
+
+example command: python slicer.py visualize mug.glb 0 0 2 0 0 -1 100
+The script reads these numbers in a strict order:
+
+0 0 2: This is the Pose (camera_pos).
+It's an (x, y, z) coordinate of where the "camera" (or slicing-plane) starts.
+In this case, it starts at (0, 0, 2), which is 2 units "above" the center of the normalized object.
+
+0 0 -1: This is the Direction (camera_dir).
+It's an (x, y, z) vector of where the camera is looking.
+
+(0, 0, -1) means it's looking straight down the Z-axis.
+100: This is the Number of Slices (n_slices).
+"""
+
+def timeit(func):
+    """A simple decorator to measure function execution time."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        # Print to stderr so it doesn't interfere with JSON output
+        print(f"--- Timing '{func.__name__}': Starting ---", file=sys.stderr)
+        start_time = time.perf_counter()
+
+        result = func(*args, **kwargs) # Run the actual function
+
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
+        print(f"--- Timing '{func.__name__}': Finished in {elapsed:.4f} seconds ---", file=sys.stderr)
+        return result
+    return wrapper
+# --- END DECORATOR ---
+
+
+# Simplified utility functions
 compose = lambda f, g: lambda x: f(g(x))
 empty = lambda l: len(l) == 0
-lerp = lambda t: lambda a: lambda b: (b - a) * t + a
-epsilon = 1e-6  # avoid division by zero when normalizing a range of zero
-max_slices = 100  # maximuim slice precision for caching
-max_cache = 100  # maximum number of viewpoints to cache
-normalize = lambda grid: lambda min: lambda max: (grid - min) / (max - min + epsilon)
-norm = lambda v: v / np.linalg.norm(v)
+epsilon = 1e-6
+max_slices = 100
+max_cache = 100
+norm = lambda v: v / (np.linalg.norm(v) + epsilon)
 pull = lambda f: trimesh.load(f, force="mesh")
 sha256 = lambda s: hashlib.sha256(s).hexdigest()
 hashify = compose(sha256, pickle.dumps)
 
 
-def points_to_image(
-    points: np.ndarray, resolution: Tuple[int, int] = (256, 256)
-) -> np.ndarray:
-    """Convert an x by 2 matrix into an image matrix."""
-    # Guard condition
-    if empty(points):
-        return np.zeros(resolution)
-
-    points = np.array(points)
-    min_vals = points.min(axis=0)
-    max_vals = points.max(axis=0)
-
-    # Normalize points to fit in the image grid
-    normalized_points = normalize(points)(min_vals)(max_vals)
-    pixel_coords = (normalized_points * (np.array(resolution) - 1)).astype(int)
-
-    image = np.zeros(resolution)
-    ones = np.ones(pixel_coords.shape[0])
-    image[pixel_coords[:, 0], pixel_coords[:, 1]] = (
-        ones  # mark points in the image matrix
-    )
-
-    return image
+def lerp(a, b, t):
+    """Linear interpolation."""
+    return (b - a) * t + a
 
 
-def normalize_mesh(mesh):
-    """Normalize mesh to be centered at origin."""
-    centroid = mesh.centroid
-    scale = np.max(mesh.extents)
-    mesh.apply_translation(-centroid)
-    mesh.apply_scale(1.0 / scale)
-    return mesh
+def normalize_array(arr, min_val, max_val):
+    """Normalize array to [0, 1] range."""
+    return (arr - min_val) / (max_val - min_val + epsilon)
 
+def path2d_to_image(path, width=256, height=256) -> np.ndarray:
+    """Convert 2D path to filled image using PIL and shapely polygons."""
+    if path is None or not hasattr(path, 'bounds') or empty(path.vertices):
+        # Return an all-black image (representing empty "air")
+        return np.zeros((width, height))
 
-def path2d_to_image(path, width=60, height=40) -> np.ndarray:
-    # Get the bounds of the path
     minx, miny = path.bounds[0]
     maxx, maxy = path.bounds[1]
 
-    # Compute scale and translation to fit path in the image
+    # Handle cases where the path is a single point or line
+    if abs(maxx - minx) < epsilon or abs(maxy - miny) < epsilon:
+        return np.zeros((width, height)) # Return empty image
+
     scale_x = width / (maxx - minx)
     scale_y = height / (maxy - miny)
-    scale = min(
-        scale_x, scale_y
-    )  # Preserve aspect ratio (use same scale in all directions)
+    scale = min(scale_x, scale_y) * 0.9 # Add some padding
 
-    # Translate and scale vertices to image coordinates
-    transformed = (path.vertices - [minx, miny]) * scale
-    transformed[:, 1] = height - transformed[:, 1]  # Flip Y-axis for image coordinates
+    offset_x = (width - (maxx - minx) * scale) / 2
+    offset_y = (height - (maxy - miny) * scale) / 2
 
-    # Create a blank image
+    # Create a black background ("air")
     img = Image.new("L", (width, height), color=0)
     draw = ImageDraw.Draw(img)
 
-    # Draw each path entity
-    for entity in path.entities:
-        if hasattr(entity, "points"):
-            indices = entity.points
-        elif hasattr(entity, "nodes"):
-            indices = entity.nodes
-        else:
-            continue
+    # --- THIS IS THE ONLY CHANGE ---
+    # It should be .polygons_full, not .polygons
+    for polygon in path.polygons_full:
+    # --- END CHANGE ---
 
-        coords = [tuple(transformed[i]) for i in indices]
-        if isinstance(entity, trimesh.path.entities.Line):  # type: ignore[reportAttributeAccessIssue]
-            draw.line(coords, fill=255)
-        elif isinstance(entity, trimesh.path.entities.Arc):  # type: ignore[reportAttributeAccessIssue]
-            # Optional: Handle arc approximation
-            arc = path.discrete(entity)
-            coords = [(p[0], height - p[1]) for p in arc * scale]
-            draw.line(coords, fill=255)
+        # --- 1. Draw the exterior (solid) ---
+        exterior_coords = np.array(polygon.exterior.coords)
+
+        # Apply the same transformations as before
+        transformed_ext = (exterior_coords - [minx, miny]) * scale
+        transformed_ext += [offset_x, offset_y]
+        transformed_ext[:, 1] = height - transformed_ext[:, 1] # Flip Y-axis
+
+        # Draw the filled exterior shape as white ("solid")
+        draw.polygon([tuple(p) for p in transformed_ext], fill=255)
+
+        # --- 2. Draw the interiors (holes) ---
+        for interior in polygon.interiors:
+            interior_coords = np.array(interior.coords)
+
+            # Apply the same transformations
+            transformed_int = (interior_coords - [minx, miny]) * scale
+            transformed_int += [offset_x, offset_y]
+            transformed_int[:, 1] = height - transformed_int[:, 1] # Flip Y-axis
+
+            # Draw the filled interior shape as black ("air")
+            # This "punches the hole" in the white shape
+            draw.polygon([tuple(p) for p in transformed_int], fill=0)
 
     return np.array(img)
 
+def get_mesh_bounds_along_ray(mesh: trimesh.Trimesh, camera_pos: np.ndarray, camera_dir: np.ndarray) -> Tuple[float, float]:
+    """Get min and max distances along a ray through the mesh."""
+    intersections, _, _ = mesh.ray.intersects_location(
+        ray_origins=np.array([camera_pos]), ray_directions=np.array([camera_dir])
+    )
 
+    if len(intersections) < 2:
+        corners = mesh.bounding_box.vertices
+        projections = np.dot(corners - camera_pos, camera_dir)
+        if len(projections) == 0:
+            raise ValueError("Cannot determine mesh bounds along the ray.")
+        return float(projections.min()), float(projections.max())
+
+    distances = np.linalg.norm(intersections - camera_pos, axis=1)
+    return float(distances.min()), float(distances.max())
+
+def _process_slice_worker(plane_origin, mesh, plane_normal):
+    """
+    Worker function for a single slice.
+    This version correctly handles all of trimesh's return types.
+    """
+    try:
+        section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
+        slice_2D = None
+
+        if section is None:
+            # Case 1: The plane missed the mesh entirely.
+            pass
+        elif hasattr(section, 'to_2D'):
+            # Case 2: It's a Path3D object.
+            if len(section.vertices) > 0:
+                try:
+                    slice_2D, _ = section.to_2D()
+                except Exception as e:
+                    print(f"Slice at {plane_origin}: .to_2D() method failed: {e}", file=sys.stderr)
+        elif hasattr(section, 'outline'):
+            # Case 3: It's a Trimesh object (i.e., a coplanar section).
+            if len(section.vertices) > 0:
+                slice_2D = section.outline() # .outline() returns a Path2D
+        else:
+            # Case 4: It's some other object we don't recognize.
+            print(f"Slice at {plane_origin}: received unknown section type: {type(section)}", file=sys.stderr)
+
+        # Generate the image from the resulting Path2D (or None)
+        image = path2d_to_image(slice_2D)
+        return image
+
+    except Exception as e:
+        # Catch any other unexpected errors in this worker
+        print(f"FATAL Error processing slice at {plane_origin}: {e}", file=sys.stderr)
+        return np.full((256, 256), 255) # Return a default empty image
+
+@timeit # <-- APPLIED DECORATOR
 def slice_mesh(
     mesh: trimesh.Trimesh,
     num_slices: int,
     camera_pos: np.ndarray,
     camera_dir: np.ndarray,
-    disp=True,
-):
-    # get closest and furthest distances from the camera to the mesh given the camera position and direction
+) -> list:
+    """Slice mesh along camera direction using multiprocessing."""
+    try:
+        first_distance, last_distance = get_mesh_bounds_along_ray(mesh, camera_pos, camera_dir)
+    except ValueError as e:
+        print(f"Error getting mesh bounds: {e}", file=sys.stderr)
+        return []
 
-    # shoot a ray from the camera position in the direction of the camera direction and figure out the distance
-    # at which it intersects with the mesh and the last distance it intersects with it
-    # Use the ray-mesh intersector
-    intersections, _, _ = mesh.ray.intersects_location(
-        ray_origins=camera_pos,
-        ray_directions=camera_dir,
-        multiple_hits=True,
+    t_values = np.linspace(0, 1, num_slices)
+    plane_origins = camera_pos + np.outer(
+        lerp(first_distance, last_distance, t_values),
+        camera_dir.flatten()
     )
 
-    first_intersect = intersections[0, :]
-    last_intersect = intersections[1, :]
+    task_worker = functools.partial(
+        _process_slice_worker,
+        mesh=mesh,
+        plane_normal=camera_dir
+    )
 
-    # get the first and last distances
-    first_distances = np.linalg.norm(first_intersect - camera_pos)
-    last_distances = np.linalg.norm(last_intersect - camera_pos)
-
-    plane_origins = []
-
-    # generate x plane origin coordinates in the same direction of the camera except all of their distances must range from first_distance to last_distance
-    # for each slice, generate a plane origin at the camera direction
-    for i in range(num_slices + 1):
-        # generate a plane origin at the camera direction
-        plane_origins.append(
-            camera_pos
-            + lerp(i / num_slices)(first_distances)(last_distances) * camera_dir
-        )
-
-    # calculate the intersection of each one of the plane origin given they're all pointing in the camera dir
-    # for each slice, generate a plane normal at the camera direction
-    plane_normals = np.array((num_slices + 1) * [camera_dir])
-    plane_origins = np.array(plane_origins)
-
-    # get the intersection of the mesh with each one of the planes
     intersections = []
 
-    # plot the mesh and all planes
-    if disp:
-        plot_planes_with_mesh(mesh, plane_origins, plane_normals)
-
-    for i in range(num_slices + 1):
-        intersection_path = find_2d_intersection(
-            plane_origin=plane_origins[i].reshape((3,)),
-            plane_normal=plane_normals[i].reshape((3,)),
-            mesh=mesh,
-        )
-
-        if intersection_path is not None:
-            # convert the path to an image
-            image = path2d_to_image(intersection_path, width=256, height=256)
-            # append the image to the list of images
-            intersections.append(image)
+    with ProcessPoolExecutor() as executor:
+        results = executor.map(task_worker, plane_origins)
+        intersections = list(results)
 
     return intersections
 
 
-def find_2d_intersection(
-    mesh: trimesh.Trimesh, plane_origin: np.ndarray, plane_normal: np.ndarray
-):
-    # Compute the intersection (section) of the plane and the mesh
-    # This returns a Path3D object representing the intersection curve(s)
-    section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
-
-    # Check if intersection was found
-    if section is not None:
-        # You can project it to 2D (if desired), or work with 3D paths
-        slice_2D, _ = section.to_2D()
-        return slice_2D
-    else:
-        print("Empty cross section")
+def normalize_mesh(mesh):
+    """Normalize mesh to be centered at origin and fit in a unit cube."""
+    if not isinstance(mesh, trimesh.Trimesh) or empty(mesh.vertices):
+        return mesh
+    centroid = mesh.centroid
+    mesh.apply_translation(-centroid)
+    scale = (1.0 / mesh.scale) if mesh.scale > 0 else 1.0
+    mesh.apply_scale(scale)
+    return mesh
 
 
-def save_slice(image, path: str):
-    """Save single slice image"""
-    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-    ax.imshow(image, cmap="gray")
-    ax.axis("off")
-    plt.savefig(f"{path}.png", bbox_inches="tight", pad_inches=0)
-    plt.close(fig)
+def save_slice(image_array: np.ndarray, path: str):
+    """Save single slice image from a numpy array."""
+    if image_array is None: return
+    image = Image.fromarray(image_array.astype(np.uint8), 'L')
+    image.save(f"{path}.png")
 
 
-def plot_slices(images):
-    """Plot the images in a grid."""
-    num_slices = len(images)
-    cols = 5
-    rows = (num_slices + cols - 1) // cols
-
-    fig, axs = plt.subplots(rows, cols, figsize=(15, 3 * rows))
-    for i in range(num_slices):
-        ax = axs[i // cols, i % cols]
-        ax.imshow(images[i], cmap="gray")
-        ax.axis("off")
-    plt.show()
-
-
-def plot_planes_with_mesh(mesh, plane_origins, plane_normals):
-    """Plot the mesh and a set of slicing planes in 3D."""
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-
-    # normalize mesh
-    mesh = normalize_mesh(mesh)
-
-    # Plot mesh
-    ax.plot_trisurf(  # type: ignore[reportAttributeAccessIssue]
-        mesh.vertices[:, 0],
-        mesh.vertices[:, 1],
-        mesh.vertices[:, 2],
-        triangles=mesh.faces,
-        alpha=0.5,
-        color="gray",
-    )
-
-    # Plot planes
-    for point, normal in zip(plane_origins, plane_normals):
-        point = point.reshape((3,))
-        normal = normal.reshape((3,))
-
-        # Find two orthonormal vectors spanning the plane
-        # First vector: arbitrary vector not collinear with the normal
-        arbitrary = (
-            np.array([1, 0, 0])
-            if not np.allclose(normal[:2], [0, 0])
-            else np.array([0, 1, 0])
-        )
-        v1 = np.cross(normal, arbitrary)
-        v1 /= np.linalg.norm(v1)
-        v2 = np.cross(normal, v1)
-        v2 /= np.linalg.norm(v2)
-
-        # Create a grid in plane coordinates
-        s = np.linspace(-1, 1, 10)
-        t = np.linspace(-1, 1, 10)
-        S, T = np.meshgrid(s, t)
-
-        # Generate points on the plane: P(s, t) = origin + s*v1 + t*v2
-        plane_points = (
-            point[:, None, None]
-            + S[None, :, :] * v1[:, None, None]
-            + T[None, :, :] * v2[:, None, None]
-        )
-
-        X = plane_points[0]
-        Y = plane_points[1]
-        Z = plane_points[2]
-
-        # Plot the plane
-        ax.plot_surface(X, Y, Z, alpha=0.5, color="blue")  # type: ignore[reportAttributeAccessIssue]
-
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")  # type: ignore[reportAttributeAccessIssue]
-    plt.show()
-
-
+# --- Cache Management ---
 global_cache = "serve/assets/cache"
-get_cache = lambda n: f"{global_cache}/{n}"
-cache_entry = lambda entry: hashify(
-    {"file": entry[0], "pose": entry[1], "dir": entry[2]}
-)
+get_cache = lambda n: os.path.join(global_cache, n)
+
+def cache_entry(file: str, pose: np.ndarray, direction: np.ndarray) -> str:
+    """Generate cache key for a specific viewpoint."""
+    data_to_hash = (file, tuple(pose.flatten()), tuple(direction.flatten()))
+    return hashify(data_to_hash)
 
 
-# create cache directory for slices from specific viewpoint
-def cache(slices: list, dirname: str, n: int):
+@timeit # <-- APPLIED DECORATOR
+def cache_slices(slices: list, dirname: str):
+    """Create cache directory and save all slice images."""
     cachedir = get_cache(dirname)
     os.makedirs(cachedir, exist_ok=True)
-    for i, sliced in enumerate(slices):
-        save_slice(sliced, f"{cachedir}/{int(i / n * max_slices)}")
+    for i, slice_data in enumerate(slices):
+        save_slice(slice_data, os.path.join(cachedir, str(i)))
 
 
-# normalize mesh and center it around 0,0 after pulling it from file source
 load = compose(normalize_mesh, pull)
 
+@timeit # <-- APPLIED DECORATOR
+def generate_and_cache(file: str, pose: np.ndarray, directory: np.ndarray, n: int, cache_key: str):
+    """Generate all cross sections, then cache them."""
+    try:
+        mesh: trimesh.Trimesh = load(file)
+        if not isinstance(mesh, trimesh.Trimesh):
+            raise ValueError(f"Failed to load a valid mesh from {file}")
+    except Exception as e:
+        print(f"Error loading mesh: {e}", file=sys.stderr)
+        return
 
-# generate cross sections given variable parameters, then cache images
-def generate(file: str, pose: np.ndarray, directory: np.ndarray, n: int):
-    mesh: trimesh.Trimesh = load(file)
     angle = norm(directory)
-    slices = slice_mesh(
-        mesh, num_slices=n, camera_pos=pose, camera_dir=angle, disp=False
-    )
-    cache(slices, cache_entry((file, pose, directory)), n)
+    slices = slice_mesh(mesh, num_slices=n, camera_pos=pose, camera_dir=angle)
 
+    if not empty(slices):
+        cache_slices(slices, cache_key)
 
-# search cache for specific file
-def search_cache_file(directory: str, p: float) -> str | None:
-    id = int(p * max_slices)
-    path = f"{directory}/{id}.png"
-    return path if os.path.exists(path) else None
+def retrieve(file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int) -> dict:
+    """Retrieve a specific slice, generating the full set if necessary."""
+    cache_key = cache_entry(file, pose, directory)
+    cachedir = get_cache(cache_key)
 
+    slice_path = os.path.join(cachedir, f"{i}.png")
 
-# search cache
-def search_cache(
-    file: str, pose: np.ndarray, directory: np.ndarray, p: float
-) -> str | None:
-    dirname = cache_entry((file, pose, directory))
-    cachedir = get_cache(dirname)
-    return search_cache_file(cachedir, p) if os.path.isdir(cachedir) else None
+    if not os.path.isdir(cachedir):
+        print(f"Cache miss. Generating {n} slices for {cache_key}...", file=sys.stderr)
 
+        # This function call is now timed by the decorator
+        generate_and_cache(file, pose, directory, n, cache_key)
 
-# retrieve pre-generated slices or generate a new batch if necessary
-def retrieve(
-    file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int, max_retries=5
-) -> str:
-    if max_retries <= 0:
-        raise RuntimeError("Failed to retrieve slice after maximum retries.")
-    res = search_cache(file, pose, directory, i / n)
-    if res is not None:
-        return res
+    if os.path.exists(slice_path):
+        image = Image.open(slice_path)
+        image_data = np.array(image).tolist()
+
+        return {
+            "path": slice_path,
+            "sliceData": image_data,
+            "width": image.width,
+            "height": image.height,
+            "message": "Slice retrieved successfully."
+        }
     else:
-        generate(file, pose, directory, n)
-        return retrieve(file, pose, directory, n, i, max_retries - 1)
+        return {
+            "error": f"Failed to generate or find slice {i} for the given parameters."
+        }
 
-
-def test():
-    print("Called from server")
-
-
-def prune(subdirs: list[Path]):
-    subdirs.sort(key=lambda p: p.stat().st_ctime)
-    targeted = subdirs[max_cache:]
-    for target in targeted:
-        shutil.rmtree(target)
-
-
-# clean cache by deleting old directories if exceeding max number of viewpoints
 def clean():
-    subdirs = [p for p in Path(global_cache).iterdir() if p.is_dir()]
+    """Clean cache by deleting old directories."""
+    cache_path = Path(global_cache)
+    if not cache_path.exists(): return
+
+    subdirs = [p for p in cache_path.iterdir() if p.is_dir()]
     if len(subdirs) > max_cache:
-        prune(subdirs)
+        subdirs.sort(key=lambda p: p.stat().st_ctime)
+        for target in subdirs[:len(subdirs) - max_cache]:
+            shutil.rmtree(target)
+    print(json.dumps({"message": "Cache cleaned successfully."}))
 
 
+def visualize_slices(slices: list):
+    """
+    Open an interactive OpenCV window to view slices.
+
+    Controls:
+        n / j : Next slice
+        p / k : Previous slice
+        q     : Quit
+    """
+    if empty(slices):
+        print("No slices to visualize.", file=sys.stderr)
+        return
+
+    # Convert grayscale images to BGR so we can draw colored text
+    try:
+        slices_bgr = [cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_GRAY2BGR) for img in slices]
+    except cv2.error as e:
+        print(f"OpenCV error. Make sure all slices are valid images. {e}", file=sys.stderr)
+        return
+
+    total_slices = len(slices_bgr)
+    current_index = 0
+    window_name = "Slice Viewer"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL) # Make window resizable
+
+    print("\n--- 👁️ Slice Viewer Active ---", file=sys.stderr)
+    print(f"  Press 'n' or 'j' for NEXT slice", file=sys.stderr)
+    print(f"  Press 'p' or 'k' for PREVIOUS slice", file=sys.stderr)
+    print(f"  Press 'q' to QUIT", file=sys.stderr)
+    print("-------------------------------", file=sys.stderr)
+
+    while True:
+        # Get the current slice and make a copy so we don't draw on it
+        img_display = slices_bgr[current_index].copy()
+
+        # Add text overlay
+        text = f"Slice: {current_index + 1} / {total_slices}"
+        cv2.putText(
+            img=img_display,
+            text=text,
+            org=(10, 25), # Bottom-left corner of the text
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+            fontScale=0.7,
+            color=(0, 255, 0), # Green
+            thickness=2
+        )
+
+        cv2.imshow(window_name, img_display)
+
+        # Wait indefinitely for a key press
+        key = cv2.waitKey(0) & 0xFF
+
+        if key == ord('q'):
+            break
+        elif key == ord('n') or key == ord('j'): # Next
+            current_index = min(current_index + 1, total_slices - 1)
+        elif key == ord('p') or key == ord('k'): # Previous
+            current_index = max(current_index - 1, 0)
+        # Note: Arrow keys are often platform-specific, so 'n'/'p' is more robust
+
+    cv2.destroyAllWindows()
+
+
+# --- Main execution block for command-line calls ---
 if __name__ == "__main__":
-    # Load the model
-    mesh = load("./tests/mug.glb")
-    camera_position = np.array([[0, 5, 0]])
-    # find the direction that points to the origin
-    camera_direction = 0 - camera_position
-    camera_direction = camera_direction / np.linalg.norm(camera_direction)
-    slices = slice_mesh(
-        mesh,  # type: ignore[reportArgumentType]
-        num_slices=10,
-        camera_pos=camera_position,
-        camera_dir=camera_direction,
-    )
-    plot_slices(slices)
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "No command provided."}), file=sys.stderr)
+        sys.exit(1)
+
+    command = sys.argv[1]
+
+    try:
+        if command == "retrieve":
+            file_name = sys.argv[2]
+            file_path = os.path.join("models", file_name)
+
+            pose = np.array([float(x) for x in sys.argv[3:6]])
+            direction = np.array([float(x) for x in sys.argv[6:9]])
+            n_slices = int(sys.argv[9])
+            i_slice = int(sys.argv[10])
+
+            result = retrieve(file_path, pose, direction, n_slices, i_slice)
+
+            # The final JSON output is printed to stdout
+            # print(json.dumps(result))
+
+        elif command == "visualize":
+            file_name = sys.argv[2]
+            file_path = os.path.join("models", file_name)
+
+            pose = np.array([float(x) for x in sys.argv[3:6]])
+            direction = np.array([float(x) for x in sys.argv[6:9]])
+            n_slices = int(sys.argv[9])
+
+            print(f"Loading mesh: {file_path}", file=sys.stderr)
+            mesh: trimesh.Trimesh = load(file_path)
+            if not isinstance(mesh, trimesh.Trimesh):
+                 raise ValueError(f"Failed to load a valid mesh from {file_path}")
+
+            print(f"Generating {n_slices} slices in memory...", file=sys.stderr)
+            angle = norm(direction)
+
+            # This will be timed by your @timeit decorator
+            slices = slice_mesh(mesh, num_slices=n_slices, camera_pos=pose, camera_dir=angle)
+
+            visualize_slices(slices)
+
+        elif command == "clean":
+            clean()
+
+        else:
+            print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)
+
+    except (IndexError, ValueError) as e:
+        print(json.dumps({"error": f"Invalid arguments for command '{command}'. Details: {e}"}), file=sys.stderr)
+        sys.exit(1)

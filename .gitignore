@@ -1,3 +1,4 @@
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -186,5 +187,6 @@ result-*
 # Project-specific cache
 cache
 
-# Project-specific model directory
-models
+Primary.txt
+Secondary.txt
+node_modules/

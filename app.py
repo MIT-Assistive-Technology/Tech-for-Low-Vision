@@ -1,68 +1,68 @@
-import json
+# import json
 
-import numpy as np
-from flask import Flask, request
-from flask_cors import CORS
+# import numpy as np
+# from flask import Flask, request
+# from flask_cors import CORS
 
-from slicer import clean, retrieve, test
+# from slicer import clean, retrieve, test
 
-app = Flask(__name__)
-CORS(app)
-
-
-fmap = lambda f: lambda l: [f(x) for x in l]
+# app = Flask(__name__)
+# CORS(app)
 
 
-@app.route("/")
-def index():
-    return "root"
+# fmap = lambda f: lambda l: [f(x) for x in l]
 
 
-@app.route("/test")
-def callTest():
-    test()
-    return "success"
+# @app.route("/")
+# def index():
+#     return "root"
 
 
-@app.route("/clean")
-def cleanCache():
-    clean()
-    return "success"
+# @app.route("/test")
+# def callTest():
+#     test()
+#     return "success"
 
 
-@app.route("/get")
-def get():
-    file = request.args.get("file")
-    if file is None:
-        return "error; need `file`"
+# @app.route("/clean")
+# def cleanCache():
+#     clean()
+#     return "success"
 
-    poseX = request.args.get("poseX")
-    poseY = request.args.get("poseY")
-    poseZ = request.args.get("poseZ")
 
-    if poseX is None or poseY is None or poseZ is None:
-        return "error; need `poseX`, `poseY`, and `poseZ`"
+# @app.route("/get")
+# def get():
+#     file = request.args.get("file")
+#     if file is None:
+#         return "error; need `file`"
 
-    dirX = request.args.get("dirX")
-    dirY = request.args.get("dirY")
-    dirZ = request.args.get("dirZ")
+#     poseX = request.args.get("poseX")
+#     poseY = request.args.get("poseY")
+#     poseZ = request.args.get("poseZ")
 
-    if dirX is None or dirY is None or dirZ is None:
-        return "error; need `dirX`, `dirY`, and `dirZ`"
+#     if poseX is None or poseY is None or poseZ is None:
+#         return "error; need `poseX`, `poseY`, and `poseZ`"
 
-    n = request.args.get("n")
-    i = request.args.get("i")
+#     dirX = request.args.get("dirX")
+#     dirY = request.args.get("dirY")
+#     dirZ = request.args.get("dirZ")
 
-    if n is None or i is None:
-        return "error; need `n` and `i`"
+#     if dirX is None or dirY is None or dirZ is None:
+#         return "error; need `dirX`, `dirY`, and `dirZ`"
 
-    path = "/".join(
-        retrieve(
-            f"models/{file}",
-            np.array([fmap(float)([poseX, poseY, poseZ])]),  # pyright: ignore
-            np.array([fmap(float)([dirX, dirY, dirZ])]),  # pyright: ignore
-            int(n),
-            int(i),
-        ).split("/")[1:]
-    )
-    return json.dumps({"path": path})
+#     n = request.args.get("n")
+#     i = request.args.get("i")
+
+#     if n is None or i is None:
+#         return "error; need `n` and `i`"
+
+#     path = "/".join(
+#         retrieve(
+#             f"models/{file}",
+#             np.array([fmap(float)([poseX, poseY, poseZ])]),  # pyright: ignore
+#             np.array([fmap(float)([dirX, dirY, dirZ])]),  # pyright: ignore
+#             int(n),
+#             int(i),
+#         ).split("/")[1:]
+#     # )
+#     return json.dumps({"path": path})
