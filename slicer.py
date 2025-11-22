@@ -13,6 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
+import scipy.ndimage as ndimage
 
 import cv2
 
