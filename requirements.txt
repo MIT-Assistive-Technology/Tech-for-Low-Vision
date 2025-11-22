@@ -1,8 +1,7 @@
-flask
-flask-cors
-matplotlib
 numpy
 pillow
 rtree
 scipy
 trimesh
+shapely
+opencv-python

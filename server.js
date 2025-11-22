@@ -94,7 +94,8 @@ app.get('/api/slice', async (req, res) => {
         }
 
         // Construct the full URL to the generated image using the path from the JSON object
-        const fileUrl = `${req.protocol}://${req.get('host')}/${result.path.replace(/\\/g, '/')}`;
+        const relativePath = path.relative(path.join(__dirname, 'serve/assets'), result.path).replace(/\\/g, '/');
+        const fileUrl = `${req.protocol}://${req.get('host')}/assets/${relativePath}`;
 
         // Send the entire result object back, now including the URL
         res.status(200).json({ ...result, url: fileUrl });

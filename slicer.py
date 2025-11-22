@@ -397,7 +397,7 @@ if __name__ == "__main__":
             result = retrieve(file_path, pose, direction, n_slices, i_slice)
 
             # The final JSON output is printed to stdout
-            # print(json.dumps(result))
+            print(json.dumps(result))
 
         elif command == "visualize":
             file_name = sys.argv[2]
