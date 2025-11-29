@@ -67,7 +67,6 @@
                         </div>
                     </div>
                 </div>
-
                 <!-- Slicing Parameters -->
                 <div>
                     <h3 class="text-md font-medium text-gray-800 mb-2">Slicing Parameters</h3>
@@ -108,13 +107,21 @@
     <script>
         const form = document.getElementById('slicer-form');
         const loader = document.getElementById('loader');
-        const imageDisplay = document.getElementById('image-display');
         const resultImage = document.getElementById('result-image');
         const placeholderText = document.getElementById('placeholder-text');
         const errorMessage = document.getElementById('error-message');
 
-        form.addEventListener('submit', async (event) => {
-            event.preventDefault();
+        // Function to get elements
+        const getEl = (id) => document.getElementById(id);
+
+        /**
+         * Reusable function to submit the form and fetch the slice image.
+         */
+        async function generateSlice(event) {
+            // IMPORTANT: Prevent the browser's default submission, which can open new tabs.
+            if (event) {
+                event.preventDefault();
+            }
 
             // Clear previous results and show loader
             loader.classList.remove('hidden');
@@ -146,7 +153,57 @@
                 // Hide loader
                 loader.classList.add('hidden');
             }
-        });
+        }
+
+        /**
+         * Function to fetch SpaceMouse data and update form inputs.
+         * This function runs on an interval and DOES NOT trigger a slice.
+         */
+        async function updateSpaceMouseInputs() {
+            try {
+                const response = await fetch('/api/spacemouse');
+                if (!response.ok) return;
+
+                const data = await response.json()
+
+                // Define a sensitivity/scaling factor for the movements
+                const SENSITIVITY = 5000;
+                const ROT_SENSITIVITY = 10000;
+
+                // --- Map SpaceMouse Data to Camera Parameters ---
+
+                // Translation (x, y, z) maps to Camera Direction (DirX, DirY, DirZ)
+                // We only update the value property; this should not trigger a 'change' event.
+                if (data.x !== 0) getEl('dirX').value = (parseFloat(getEl('dirX').value) + data.x / SENSITIVITY).toFixed(2);
+                if (data.y !== 0) getEl('dirY').value = (parseFloat(getEl('dirY').value) + data.y / SENSITIVITY).toFixed(2);
+                if (data.z !== 0) getEl('dirZ').value = (parseFloat(getEl('dirZ').value) + data.z / SENSITIVITY).toFixed(2);
+
+                // Rotation (rot_x, rot_y, rot_z) maps to Camera Position (PoseX, PoseY, PoseZ)
+                if (data.rot_x !== 0) getEl('poseX').value = (parseFloat(getEl('poseX').value) + data.rot_x / ROT_SENSITIVITY).toFixed(2);
+                if (data.rot_y !== 0) getEl('poseY').value = (parseFloat(getEl('poseY').value) + data.rot_y / ROT_SENSITIVITY).toFixed(2);
+                if (data.rot_z !== 0) getEl('poseZ').value = (parseFloat(getEl('poseZ').value) + data.rot_z / ROT_SENSITIVITY).toFixed(2);
+
+            } catch (error) {
+                // Ignore server connection errors during frequent polling
+            }
+        }
+
+        // --- Event Listeners ---
+
+        // 1. Polling interval to update SpaceMouse inputs (every 50ms)
+        setInterval(updateSpaceMouseInputs, 50);
+
+        // 2. ONLY the manual button click listener remains.
+        // The generateSlice function will call event.preventDefault() to stop the new tab issue.
+        form.addEventListener('submit', generateSlice);
+
+        /* *** REMOVED LISTENERS: ***
+        // sliceIndexInput.addEventListener('change', generateSlice);
+        // totalSlicesInput.addEventListener('change', generateSlice);
+        // These listeners were likely the source of the unintended automatic form submissions.
+        // If you need them back, you'll have to manually add them (e.g., sliceIndexInput.addEventListener('change', generateSlice);)
+        // but the safest bet is to rely only on the main submit button.
+        */
     </script>
 </body>
 </html>

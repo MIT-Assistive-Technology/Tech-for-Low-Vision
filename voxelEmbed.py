@@ -8,7 +8,6 @@ import sys
 import time
 from typing import List
 
-# (Your original 'norm' and 'pull' functions are still useful)
 epsilon = 1e-6
 norm = lambda v: v / (np.linalg.norm(v) + epsilon)
 pull = lambda f: trimesh.load(f, force="mesh")

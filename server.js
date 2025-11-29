@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const cors = require('cors');
 const path = require('path');
 
+
 const app = express();
 const port = 3000;
 
@@ -18,10 +19,49 @@ app.use('/assets', express.static(path.join(__dirname, 'serve/assets')));
 // Enable Cross-Origin Resource Sharing (CORS) for all routes
 app.use(cors());
 
+let spaceMouseData = {
+    x: 0,
+    y: 0,
+    z: 0,
+    rot_x: 0,
+    rot_y: 0,
+    rot_z: 0
+};
+
+/**
+ * @route POST /api/spacemouse
+ * @description Receives 3D mouse data from the Python script and updates the server state.
+ */
+app.post('/api/spacemouse', (req, res) => {
+    const { x, y, z, rot_x, rot_y, rot_z } = req.body;
+
+    // Simple validation (can be more robust)
+    if (x === undefined || y === undefined || z === undefined ||
+        rot_x === undefined || rot_y === undefined || rot_z === undefined) {
+        return res.status(400).json({ error: 'Incomplete SpaceMouse data provided.' });
+    }
+
+    // Update the global state
+    spaceMouseData = { x, y, z, rot_x, rot_y, rot_z };
+
+    console.log('SpaceMouse Data Updated:', spaceMouseData); // Uncomment for debugging
+    res.status(200).json({ message: 'SpaceMouse data received and updated.' });
+});
+
+/**
+ * @route GET /api/spacemouse
+ * @description Sends the latest 3D mouse data to the frontend.
+ */
+app.get('/api/spacemouse', (req, res) => {
+    res.status(200).json(spaceMouseData);
+});
+
 // --- Helper Function to run the Python script ---
 function runPythonScript(scriptPath, args) {
     return new Promise((resolve, reject) => {
-        const pythonProcess = spawn('python', [scriptPath, ...args]);
+        const pythonExe = "C:\\Users\\megp_\\AppData\\Local\\Programs\\Python\\Python311\\python.exe";
+        const fullScriptPath = path.join(__dirname, scriptPath);
+        const pythonProcess = spawn(pythonExe, [fullScriptPath, ...args]);
 
         let stdout = '';
         let stderr = '';
@@ -95,7 +135,8 @@ app.get('/api/slice', async (req, res) => {
         }
 
         // Construct the full URL to the generated image using the path from the JSON object
-        const fileUrl = `${req.protocol}://${req.get('host')}/${result.path.replace(/\\/g, '/')}`;
+        const relativePath = path.relative(path.join(__dirname, 'serve/assets'), result.path).replace(/\\/g, '/');
+        const fileUrl = `${req.protocol}://${req.get('host')}/assets/${relativePath}`;
 
         // Send the entire result object back, now including the URL
         res.status(200).json({ ...result, url: fileUrl });
