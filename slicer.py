@@ -16,6 +16,9 @@ from PIL import Image, ImageDraw
 import scipy.ndimage as ndimage
 
 import cv2
+#added multiprocessing
+import multiprocessing
+multiprocessing.set_start_method("spawn", force=True)
 
 """
 how to use "visualize" command!!
@@ -147,38 +150,57 @@ def get_mesh_bounds_along_ray(mesh: trimesh.Trimesh, camera_pos: np.ndarray, cam
 def _process_slice_worker(plane_origin, mesh, plane_normal):
     """
     Worker function for a single slice.
-    This version correctly handles all of trimesh's return types.
+    Ensures consistent orientation by using a fixed transformation.
     """
     try:
         section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
         slice_2D = None
 
         if section is None:
-            # Case 1: The plane missed the mesh entirely.
             pass
         elif hasattr(section, 'to_2D'):
-            # Case 2: It's a Path3D object.
             if len(section.vertices) > 0:
                 try:
-                    slice_2D, _ = section.to_2D()
+                    # CRITICAL FIX: Specify a consistent transformation matrix
+                    # Create orthonormal basis from plane_normal
+                    normal = plane_normal.flatten()
+                    
+                    # Find two perpendicular vectors in the plane
+                    # Choose a reference vector that's not parallel to normal
+                    if abs(normal[2]) < 0.9:
+                        reference = np.array([0, 0, 1])
+                    else:
+                        reference = np.array([1, 0, 0])
+                    
+                    # Create consistent basis vectors
+                    x_axis = np.cross(normal, reference)
+                    x_axis = x_axis / (np.linalg.norm(x_axis) + epsilon)
+                    y_axis = np.cross(normal, x_axis)
+                    y_axis = y_axis / (np.linalg.norm(y_axis) + epsilon)
+                    
+                    # Build transformation matrix
+                    to_2D_transform = np.eye(4)
+                    to_2D_transform[:3, 0] = x_axis
+                    to_2D_transform[:3, 1] = y_axis
+                    to_2D_transform[:3, 2] = normal
+                    
+                    # Apply the consistent transformation
+                    slice_2D, _ = section.to_2D(to_2D_transform)
+                    
                 except Exception as e:
                     print(f"Slice at {plane_origin}: .to_2D() method failed: {e}", file=sys.stderr)
         elif hasattr(section, 'outline'):
-            # Case 3: It's a Trimesh object (i.e., a coplanar section).
             if len(section.vertices) > 0:
-                slice_2D = section.outline() # .outline() returns a Path2D
+                slice_2D = section.outline()
         else:
-            # Case 4: It's some other object we don't recognize.
             print(f"Slice at {plane_origin}: received unknown section type: {type(section)}", file=sys.stderr)
 
-        # Generate the image from the resulting Path2D (or None)
         image = path2d_to_image(slice_2D)
         return image
 
     except Exception as e:
-        # Catch any other unexpected errors in this worker
         print(f"FATAL Error processing slice at {plane_origin}: {e}", file=sys.stderr)
-        return np.full((256, 256), 255) # Return a default empty image
+        return np.zeros((256, 256), dtype=np.uint8)
 
 @timeit # <-- APPLIED DECORATOR
 def slice_mesh(
@@ -206,11 +228,16 @@ def slice_mesh(
         plane_normal=camera_dir
     )
 
-    intersections = []
+    # intersections = []
 
-    with ProcessPoolExecutor() as executor:
-        results = executor.map(task_worker, plane_origins)
-        intersections = list(results)
+    # with ProcessPoolExecutor() as executor:
+    #     results = executor.map(task_worker, plane_origins)
+    #     intersections = list(results)
+    # Trimesh object is not picklable, removed for now
+    intersections = []
+    for origin in plane_origins:
+        intersections.append(task_worker(origin))
+
 
     return intersections
 
@@ -227,10 +254,13 @@ def normalize_mesh(mesh):
 
 
 def save_slice(image_array: np.ndarray, path: str):
-    """Save single slice image from a numpy array."""
-    if image_array is None: return
-    image = Image.fromarray(image_array.astype(np.uint8), 'L')
-    image.save(f"{path}.png")
+    if image_array is None: 
+        return
+    
+    # Fix for blank images (ensures correct data type)
+    img = image_array.astype(np.uint8) 
+    
+    Image.fromarray(img, 'L').save(f"{path}.png")
 
 
 # --- Cache Management ---
@@ -300,17 +330,40 @@ def retrieve(file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int)
             "error": f"Failed to generate or find slice {i} for the given parameters."
         }
 
-def clean():
-    """Clean cache by deleting old directories."""
-    cache_path = Path(global_cache)
-    if not cache_path.exists(): return
+# def clean():
+#     """Clean cache by deleting old directories."""
+#     cache_path = Path(global_cache)
+#     if not cache_path.exists(): return
 
-    subdirs = [p for p in cache_path.iterdir() if p.is_dir()]
-    if len(subdirs) > max_cache:
-        subdirs.sort(key=lambda p: p.stat().st_ctime)
-        for target in subdirs[:len(subdirs) - max_cache]:
-            shutil.rmtree(target)
-    print(json.dumps({"message": "Cache cleaned successfully."}))
+#     subdirs = [p for p in cache_path.iterdir() if p.is_dir()]
+#     if len(subdirs) > max_cache:
+#         subdirs.sort(key=lambda p: p.stat().st_ctime)
+#         for target in subdirs[:len(subdirs) - max_cache]:
+#             shutil.rmtree(target)
+#     print(json.dumps({"message": "Cache cleaned successfully."}))
+def clean():
+    """Deletes the cache directory and recreates it."""
+    # Define the path relative to the root where slicer.py is run
+    cache_dir = Path("serve") / "assets" / "cache"
+    
+    # --- Deletion ---
+    if cache_dir.exists() and cache_dir.is_dir():
+        try:
+            # Recursively deletes the directory and all files inside it
+            shutil.rmtree(cache_dir)
+            print(f"[CLEAN] Cache directory '{cache_dir}' successfully removed.", file=sys.stderr)
+        except OSError as e:
+            # Handle potential permissions issues
+            print(f"[ERROR] Could not remove cache directory {cache_dir}: {e}", file=sys.stderr)
+            return
+
+    # --- Re-creation ---
+    # The application needs this directory to exist to save new slices
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[CLEAN] Empty cache directory '{cache_dir}' re-created.", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] Could not re-create cache directory: {e}", file=sys.stderr)
 
 
 def visualize_slices(slices: list):

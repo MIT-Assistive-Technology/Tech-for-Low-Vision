@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Model Slicer</title>
+
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap">
+
+    <!-- Local Styles -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="bg-gray-100 text-gray-800 font-inter">
+
+<div class="container mx-auto p-4 md:p-8 max-w-4xl">
+
+    <header class="text-center mb-8">
+        <h1 class="text-4xl font-bold text-gray-900">3D Model Slicer</h1>
+        <p class="text-lg text-gray-600 mt-2">Generate a 2D slice of your 3D model.</p>
+    </header>
+
+    <main class="bg-white p-6 rounded-lg shadow-md">
+
+        <form id="slicer-form" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+            <!-- Model File -->
+            <div class="col-span-1 md:col-span-2 lg:col-span-3">
+                <label for="file" class="block text-sm font-medium text-gray-700">Model File</label>
+                <input type="text" id="file" name="file" value="mug.glb"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+            </div>
+
+            <!-- Pose -->
+            <div>
+                <h3 class="text-md font-medium text-gray-800 mb-2">Camera Position (Pose)</h3>
+                <label class="block">Pose X<input type="number" id="poseX" name="poseX" value="0" step="0.1" class="w-full p-2 rounded-md border"></label>
+                <label class="block">Pose Y<input type="number" id="poseY" name="poseY" value="5" step="0.1" class="w-full p-2 rounded-md border"></label>
+                <label class="block">Pose Z<input type="number" id="poseZ" name="poseZ" value="0" step="0.1" class="w-full p-2 rounded-md border"></label>
+            </div>
+
+            <!-- Direction -->
+            <div>
+                <h3 class="text-md font-medium text-gray-800 mb-2">Camera Direction (Dir)</h3>
+                <label class="block">Dir X<input type="number" id="dirX" name="dirX" value="0" step="0.1" class="w-full p-2 rounded-md border"></label>
+                <label class="block">Dir Y<input type="number" id="dirY" name="dirY" value="-1" step="0.1" class="w-full p-2 rounded-md border"></label>
+                <label class="block">Dir Z<input type="number" id="dirZ" name="dirZ" value="0" step="0.1" class="w-full p-2 rounded-md border"></label>
+            </div>
+
+            <!-- Slice Parameters -->
+            <div>
+                <h3 class="text-md font-medium text-gray-800 mb-2">Slicing Parameters</h3>
+                <label class="block">Total Slices<input type="number" id="n" name="n" value="100" class="w-full p-2 rounded-md border"></label>
+                <label class="block mt-2">Slice Index<input type="number" id="i" name="i" value="50" class="w-full p-2 rounded-md border"></label>
+            </div>
+
+            <div class="col-span-3 text-center mt-4">
+                <button type="submit" class="bg-indigo-600 text-white px-8 py-2 rounded-md shadow hover:bg-indigo-700">
+                    Generate Slice
+                </button>
+            </div>
+        </form>
+
+        <!-- Result -->
+        <div id="result-container" class="mt-8 pt-6 border-t text-center">
+            <h2 class="text-2xl font-bold">Result</h2>
+            <div id="loader" class="hidden animate-spin h-12 w-12 border-b-2 border-indigo-600 mx-auto mt-4"></div>
+
+            <div id="image-display" class="w-64 h-64 mx-auto bg-gray-200 rounded-md flex items-center justify-center mt-4">
+                <p id="placeholder-text" class="text-gray-500">Your generated slice will appear here.</p>
+                <img id="result-image" class="hidden max-w-full max-h-full rounded-md" />
+            </div>
+
+            <p id="error-message" class="text-red-500 mt-4 text-sm"></p>
+        </div>
+
+    </main>
+</div>
+
+<!-- JS -->
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

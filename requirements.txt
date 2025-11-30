@@ -1,3 +1,5 @@
+flask
+flask-cors
 numpy
 pillow
 rtree
@@ -5,3 +7,4 @@ scipy
 trimesh
 shapely
 opencv-python
+networkx

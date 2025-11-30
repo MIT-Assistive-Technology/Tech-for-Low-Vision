@@ -1,6 +1,8 @@
 # Tech-for-Low-Vision
 
-To run,
+Project for visualizing 2D cross sections of 3D models
+
+To run, navigate to the root directory
 
 Install Python packages:
 
@@ -11,18 +13,16 @@ venv\Scripts\activate      # Windows
 pip install -r requirements.txt
 ```
 
-Install Node if not installed
-
-Install Node dependencies (if you don't have Express):
+To clean the image cache, run:
 
 ```
-npm init -y
-npm install express cors
+python3 slicer.py clean
 ```
 
-Run the server:
+To run the program, run:
+
 ```
-node server.js
+python3 app.py
 ```
 
-and navigate to http://localhost:3000
+and navigate to http://127.0.0.1:3000
