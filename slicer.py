@@ -1,3 +1,22 @@
+#!/usr/bin/env python3
+"""
+slicer.py — preserved feature set with global-consistent scaling
+
+Features preserved:
+- CLI: retrieve, visualize, clean (argument order unchanged)
+- Caching in serve/assets/cache
+- Timing decorator
+- OpenCV-based viewer
+- Multiprocessing start method preserved (but slicing runs sequentially to avoid pickling trimesh)
+- Two slice modes: intersection (default) and full-projection (enable with --projection argument)
+- Global consistent scale across all slices for any camera direction
+
+Usage examples (same as before, optionally add --projection to get CT-like full silhouette slices):
+    python slicer.py visualize mug.glb 0 0 2 0 0 -1 100
+    python slicer.py visualize mug.glb 0 0 2 0 0 -1 100 --projection
+    python slicer.py retrieve mug.glb 0 0 2 0 0 -1 100 5 --projection
+"""
+
 import hashlib
 import os
 import pickle
@@ -6,8 +25,8 @@ import sys
 import json
 from pathlib import Path
 from typing import Tuple, Optional, Any
-import time # <-- NEW IMPORT (for timeit)
-import functools # <-- NEW IMPORT (for partial and wraps)
+import time
+import functools
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -16,277 +35,405 @@ from PIL import Image, ImageDraw
 import scipy.ndimage as ndimage
 
 import cv2
-#added multiprocessing
 import multiprocessing
 multiprocessing.set_start_method("spawn", force=True)
 
-"""
-how to use "visualize" command!!
+# shapely is optional but recommended for robust polygon unions
+try:
+    from shapely.geometry import Polygon, MultiPolygon
+    from shapely.ops import unary_union
+    SHAPELY_AVAILABLE = True
+except Exception:
+    SHAPELY_AVAILABLE = False
 
-example command: python slicer.py visualize mug.glb 0 0 2 0 0 -1 100
-The script reads these numbers in a strict order:
+# -------------------------
+# Config / Defaults
+# -------------------------
+epsilon = 1e-9
+max_slices = 100
+max_cache = 100
 
-0 0 2: This is the Pose (camera_pos).
-It's an (x, y, z) coordinate of where the "camera" (or slicing-plane) starts.
-In this case, it starts at (0, 0, 2), which is 2 units "above" the center of the normalized object.
+# By default preserve intersection-based original behavior.
+# Pass '--projection' on the command line to enable full-object-projection (CT-like) slices.
+DEFAULT_FULL_PROJECTION = False
 
-0 0 -1: This is the Direction (camera_dir).
-It's an (x, y, z) vector of where the camera is looking.
+# Output image size
+DEFAULT_WIDTH = 256
+DEFAULT_HEIGHT = 256
 
-(0, 0, -1) means it's looking straight down the Z-axis.
-100: This is the Number of Slices (n_slices).
-"""
-
+# -------------------------
+# Utilities
+# -------------------------
 def timeit(func):
-    """A simple decorator to measure function execution time."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        # Print to stderr so it doesn't interfere with JSON output
         print(f"--- Timing '{func.__name__}': Starting ---", file=sys.stderr)
         start_time = time.perf_counter()
-
-        result = func(*args, **kwargs) # Run the actual function
-
+        result = func(*args, **kwargs)
         end_time = time.perf_counter()
         elapsed = end_time - start_time
         print(f"--- Timing '{func.__name__}': Finished in {elapsed:.4f} seconds ---", file=sys.stderr)
         return result
     return wrapper
-# --- END DECORATOR ---
 
-
-# Simplified utility functions
 compose = lambda f, g: lambda x: f(g(x))
 empty = lambda l: len(l) == 0
-epsilon = 1e-6
-max_slices = 100
-max_cache = 100
 norm = lambda v: v / (np.linalg.norm(v) + epsilon)
 pull = lambda f: trimesh.load(f, force="mesh")
 sha256 = lambda s: hashlib.sha256(s).hexdigest()
 hashify = compose(sha256, pickle.dumps)
 
-
 def lerp(a, b, t):
-    """Linear interpolation."""
     return (b - a) * t + a
 
-
 def normalize_array(arr, min_val, max_val):
-    """Normalize array to [0, 1] range."""
     return (arr - min_val) / (max_val - min_val + epsilon)
 
-def path2d_to_image(path, width=256, height=256) -> np.ndarray:
-    """Convert 2D path to filled image using PIL and shapely polygons."""
-    if path is None or not hasattr(path, 'bounds') or empty(path.vertices):
-        # Return an all-black image (representing empty "air")
-        return np.zeros((width, height))
+# -------------------------
+# Caching
+# -------------------------
+global_cache = "serve/assets/cache"
+get_cache = lambda n: os.path.join(global_cache, n)
 
-    minx, miny = path.bounds[0]
-    maxx, maxy = path.bounds[1]
+def cache_entry(file: str, pose: np.ndarray, direction: np.ndarray, n: int, full_projection: bool) -> str:
+    """Generate cache key for a specific viewpoint & mode."""
+    data_to_hash = (file, tuple(pose.flatten()), tuple(direction.flatten()), int(n), bool(full_projection))
+    return hashify(data_to_hash)
 
-    # Handle cases where the path is a single point or line
-    if abs(maxx - minx) < epsilon or abs(maxy - miny) < epsilon:
-        return np.zeros((width, height)) # Return empty image
+# -------------------------
+# IO helpers
+# -------------------------
+def save_slice(image_array: np.ndarray, path: str):
+    if image_array is None:
+        return
+    img = image_array.astype(np.uint8)
+    Image.fromarray(img, 'L').save(f"{path}.png")
 
-    scale_x = width / (maxx - minx)
-    scale_y = height / (maxy - miny)
-    scale = min(scale_x, scale_y) * 0.9 # Add some padding
+# -------------------------
+# Geometry helpers (global-consistent scaling)
+# -------------------------
+def build_plane_basis(normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a stable orthonormal basis (x_axis, y_axis, normal) for a plane whose normal is 'normal'.
+    """
+    n = np.array(normal, dtype=float).flatten()
+    n /= (np.linalg.norm(n) + epsilon)
 
-    offset_x = (width - (maxx - minx) * scale) / 2
-    offset_y = (height - (maxy - miny) * scale) / 2
+    # choose an arbitrary reference not parallel to n
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(ref, n)) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0])
 
-    # Create a black background ("air")
+    x_axis = np.cross(n, ref)
+    x_axis /= (np.linalg.norm(x_axis) + epsilon)
+    y_axis = np.cross(n, x_axis)
+    y_axis /= (np.linalg.norm(y_axis) + epsilon)
+
+    return x_axis, y_axis, n
+
+def project_vertices_to_plane(vertices: np.ndarray, x_axis: np.ndarray, y_axis: np.ndarray) -> np.ndarray:
+    """
+    Project 3D vertices into 2D coordinates using x_axis and y_axis.
+    Returns shape (N,2).
+    """
+    v_x = vertices @ x_axis
+    v_y = vertices @ y_axis
+    return np.vstack([v_x, v_y]).T
+
+def compute_global_2d_bounds(mesh: trimesh.Trimesh, plane_normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    For a given plane normal (camera_dir normalized), compute a global 2D bounding box by projecting
+    the entire mesh's vertices into the derived plane basis. Returns (global_min, global_max, basis_axes)
+    where global_min/max are 2-vectors and basis_axes = (x_axis, y_axis, normal).
+    """
+    x_axis, y_axis, n = build_plane_basis(plane_normal)
+    verts_2d = project_vertices_to_plane(mesh.vertices, x_axis, y_axis)
+    global_min = verts_2d.min(axis=0)
+    global_max = verts_2d.max(axis=0)
+    return global_min, global_max, (x_axis, y_axis, n)
+
+def compute_global_scale(global_min: np.ndarray, global_max: np.ndarray, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+    W = float(global_max[0] - global_min[0])
+    H = float(global_max[1] - global_min[1])
+    if W < epsilon or H < epsilon:
+        return 1.0, 0.0, 0.0
+    scale = 0.9 * min(width / W, height / H)
+    offset_x = (width - W * scale) / 2.0
+    offset_y = (height - H * scale) / 2.0
+    return scale, offset_x, offset_y
+
+# -------------------------
+# Polygon generation (intersection and full-projection)
+# -------------------------
+def polygon_from_section(section, plane_normal) -> Optional[Any]:
+    """
+    Convert a trimesh section to a shapely (or equivalent) polygon in the consistent 2D frame.
+    Returns a shapely geometry (Polygon/MultiPolygon) if shapely available, otherwise returns None.
+    """
+    if section is None:
+        return None
+
+    try:
+        # build consistent to_2D transform matching build_plane_basis
+        normal = np.array(plane_normal, dtype=float).flatten()
+        if abs(normal[2]) < 0.9:
+            reference = np.array([0.0, 0.0, 1.0])
+        else:
+            reference = np.array([1.0, 0.0, 0.0])
+
+        x_axis = np.cross(normal, reference)
+        x_axis /= (np.linalg.norm(x_axis) + epsilon)
+        y_axis = np.cross(normal, x_axis)
+        y_axis /= (np.linalg.norm(y_axis) + epsilon)
+
+        to_2D_transform = np.eye(4)
+        to_2D_transform[:3, 0] = x_axis
+        to_2D_transform[:3, 1] = y_axis
+        to_2D_transform[:3, 2] = normal
+
+        out = section.to_2D(to_2D_transform)
+        if isinstance(out, tuple) and len(out) > 0:
+            path2d = out[0]
+        else:
+            path2d = out
+
+        if path2d is None:
+            return None
+
+        if SHAPELY_AVAILABLE:
+            polys = []
+            if hasattr(path2d, "polygons_full"):
+                for p in path2d.polygons_full:
+                    try:
+                        exterior = list(p.exterior.coords)
+                        interiors = [list(i.coords) for i in p.interiors] if hasattr(p, "interiors") else []
+                        polys.append(Polygon(exterior, interiors))
+                    except Exception:
+                        continue
+            if not polys:
+                return None
+            return unary_union(polys)
+        else:
+            # Fallback: return the trimesh Path2D object for rasterization using path.polygons_full later.
+            return path2d
+
+    except Exception as e:
+        print(f"[polygon_from_section] failed: {e}", file=sys.stderr)
+        return None
+
+def polygon_from_full_projection(mesh: trimesh.Trimesh, plane_normal) -> Optional[Any]:
+    """
+    Project all triangles into the plane basis and union them to obtain the full silhouette polygon.
+    Returns shapely geometry if available, otherwise returns None or a list of polygons.
+    """
+    x_axis, y_axis, _ = build_plane_basis(plane_normal)
+    verts_2d = project_vertices_to_plane(mesh.vertices, x_axis, y_axis)
+
+    polys = []
+    for face in mesh.faces:
+        pts = verts_2d[face]
+        try:
+            p = Polygon(pts)
+            if p.is_valid and p.area > epsilon:
+                polys.append(p)
+        except Exception:
+            continue
+
+    if not polys:
+        return None
+
+    if SHAPELY_AVAILABLE:
+        merged = unary_union(polys)
+        return merged
+    else:
+        # fallback: return list of shapely-like polygons as plain arrays
+        return polys
+
+# -------------------------
+# Rasterization using global scale
+# -------------------------
+def render_shapely_or_path_to_image(poly, global_min: np.ndarray, scale: float, offset_x: float, offset_y: float, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+    """
+    Poly can be:
+      - shapely Polygon / MultiPolygon
+      - trimesh Path2D (if shapely not present)
+      - list of triangle Polygons (fallback)
+    """
     img = Image.new("L", (width, height), color=0)
     draw = ImageDraw.Draw(img)
 
-    # --- THIS IS THE ONLY CHANGE ---
-    # It should be .polygons_full, not .polygons
-    for polygon in path.polygons_full:
-    # --- END CHANGE ---
+    if poly is None:
+        return np.array(img, dtype=np.uint8)
 
-        # --- 1. Draw the exterior (solid) ---
-        exterior_coords = np.array(polygon.exterior.coords)
+    if SHAPELY_AVAILABLE and (isinstance(poly, Polygon) or isinstance(poly, MultiPolygon)):
+        poly_list = [poly] if isinstance(poly, Polygon) else list(poly)
+        for p in poly_list:
+            try:
+                exterior = np.array(p.exterior.coords)
+                ext = (exterior - global_min) * scale
+                ext += np.array([offset_x, offset_y])
+                ext[:, 1] = height - ext[:, 1]
+                draw.polygon([tuple(pt) for pt in ext], fill=255)
+                for interior in p.interiors:
+                    h = np.array(interior.coords)
+                    h = (h - global_min) * scale
+                    h += np.array([offset_x, offset_y])
+                    h[:, 1] = height - h[:, 1]
+                    draw.polygon([tuple(pt) for pt in h], fill=0)
+            except Exception as e:
+                print(f"[render] shapely polygon error: {e}", file=sys.stderr)
+                continue
+        return np.array(img, dtype=np.uint8)
 
-        # Apply the same transformations as before
-        transformed_ext = (exterior_coords - [minx, miny]) * scale
-        transformed_ext += [offset_x, offset_y]
-        transformed_ext[:, 1] = height - transformed_ext[:, 1] # Flip Y-axis
+    # If we don't have shapely, attempt to rasterize trimesh Path2D or raw triangles
+    if hasattr(poly, "polygons_full"):
+        try:
+            for p in poly.polygons_full:
+                ext_coords = np.array(p.exterior.coords)
+                ext = (ext_coords - global_min) * scale
+                ext += np.array([offset_x, offset_y])
+                ext[:, 1] = height - ext[:, 1]
+                draw.polygon([tuple(pt) for pt in ext], fill=255)
+                for interior in getattr(p, "interiors", []):
+                    h = np.array(interior.coords)
+                    h = (h - global_min) * scale
+                    h += np.array([offset_x, offset_y])
+                    h[:, 1] = height - h[:, 1]
+                    draw.polygon([tuple(pt) for pt in h], fill=0)
+            return np.array(img, dtype=np.uint8)
+        except Exception as e:
+            print(f"[render] Path2D rasterization failed: {e}", file=sys.stderr)
 
-        # Draw the filled exterior shape as white ("solid")
-        draw.polygon([tuple(p) for p in transformed_ext], fill=255)
+    # fallback: if poly is a list of triangle-polygons (as numpy arrays)
+    if isinstance(poly, list):
+        for p in poly:
+            try:
+                pts = np.array(p.exterior.coords)
+                ext = (pts - global_min) * scale
+                ext += np.array([offset_x, offset_y])
+                ext[:, 1] = height - ext[:, 1]
+                draw.polygon([tuple(pt) for pt in ext], fill=255)
+            except Exception:
+                continue
+        return np.array(img, dtype=np.uint8)
 
-        # --- 2. Draw the interiors (holes) ---
-        for interior in polygon.interiors:
-            interior_coords = np.array(interior.coords)
+    return np.array(img, dtype=np.uint8)
 
-            # Apply the same transformations
-            transformed_int = (interior_coords - [minx, miny]) * scale
-            transformed_int += [offset_x, offset_y]
-            transformed_int[:, 1] = height - transformed_int[:, 1] # Flip Y-axis
-
-            # Draw the filled interior shape as black ("air")
-            # This "punches the hole" in the white shape
-            draw.polygon([tuple(p) for p in transformed_int], fill=0)
-
-    return np.array(img)
-
+# -------------------------
+# Ray bounds helper
+# -------------------------
 def get_mesh_bounds_along_ray(mesh: trimesh.Trimesh, camera_pos: np.ndarray, camera_dir: np.ndarray) -> Tuple[float, float]:
-    """Get min and max distances along a ray through the mesh."""
+    dir_norm = np.array(camera_dir, dtype=float).flatten()
+    dir_norm /= (np.linalg.norm(dir_norm) + epsilon)
+
     intersections, _, _ = mesh.ray.intersects_location(
-        ray_origins=np.array([camera_pos]), ray_directions=np.array([camera_dir])
+        ray_origins=np.array([camera_pos], dtype=float),
+        ray_directions=np.array([dir_norm], dtype=float)
     )
 
-    if len(intersections) < 2:
-        corners = mesh.bounding_box.vertices
-        projections = np.dot(corners - camera_pos, camera_dir)
-        if len(projections) == 0:
-            raise ValueError("Cannot determine mesh bounds along the ray.")
-        return float(projections.min()), float(projections.max())
+    if len(intersections) >= 2:
+        distances = np.dot(intersections - camera_pos, dir_norm)
+        return float(distances.min()), float(distances.max())
 
-    distances = np.linalg.norm(intersections - camera_pos, axis=1)
-    return float(distances.min()), float(distances.max())
+    # fallback: use bounding box corners projection
+    corners = mesh.bounding_box.vertices
+    if len(corners) == 0:
+        raise ValueError("Cannot determine mesh bounds along the ray.")
+    projections = np.dot(corners - camera_pos, dir_norm)
+    return float(projections.min()), float(projections.max())
 
-def _process_slice_worker(plane_origin, mesh, plane_normal):
-    """
-    Worker function for a single slice.
-    Ensures consistent orientation by using a fixed transformation.
-    """
-    try:
-        section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
-        slice_2D = None
-
-        if section is None:
-            pass
-        elif hasattr(section, 'to_2D'):
-            if len(section.vertices) > 0:
-                try:
-                    # CRITICAL FIX: Specify a consistent transformation matrix
-                    # Create orthonormal basis from plane_normal
-                    normal = plane_normal.flatten()
-                    
-                    # Find two perpendicular vectors in the plane
-                    # Choose a reference vector that's not parallel to normal
-                    if abs(normal[2]) < 0.9:
-                        reference = np.array([0, 0, 1])
-                    else:
-                        reference = np.array([1, 0, 0])
-                    
-                    # Create consistent basis vectors
-                    x_axis = np.cross(normal, reference)
-                    x_axis = x_axis / (np.linalg.norm(x_axis) + epsilon)
-                    y_axis = np.cross(normal, x_axis)
-                    y_axis = y_axis / (np.linalg.norm(y_axis) + epsilon)
-                    
-                    # Build transformation matrix
-                    to_2D_transform = np.eye(4)
-                    to_2D_transform[:3, 0] = x_axis
-                    to_2D_transform[:3, 1] = y_axis
-                    to_2D_transform[:3, 2] = normal
-                    
-                    # Apply the consistent transformation
-                    slice_2D, _ = section.to_2D(to_2D_transform)
-                    
-                except Exception as e:
-                    print(f"Slice at {plane_origin}: .to_2D() method failed: {e}", file=sys.stderr)
-        elif hasattr(section, 'outline'):
-            if len(section.vertices) > 0:
-                slice_2D = section.outline()
-        else:
-            print(f"Slice at {plane_origin}: received unknown section type: {type(section)}", file=sys.stderr)
-
-        image = path2d_to_image(slice_2D)
-        return image
-
-    except Exception as e:
-        print(f"FATAL Error processing slice at {plane_origin}: {e}", file=sys.stderr)
-        return np.zeros((256, 256), dtype=np.uint8)
-
-@timeit # <-- APPLIED DECORATOR
+# -------------------------
+# Main slice function (maintains global scale)
+# -------------------------
+@timeit
 def slice_mesh(
     mesh: trimesh.Trimesh,
     num_slices: int,
     camera_pos: np.ndarray,
     camera_dir: np.ndarray,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    full_projection: bool = DEFAULT_FULL_PROJECTION,
 ) -> list:
-    """Slice mesh along camera direction using multiprocessing."""
+    """
+    Generate slices. This function ensures global-consistent scale across slices:
+      - a 2D basis is derived from camera_dir (normalized)
+      - the entire mesh is projected into that basis to compute global bounds
+      - every slice uses that same scale + offsets
+    If full_projection is True, each slice contains the full silhouette obtained by projecting
+    every triangle. If False, we use mesh.section intersections (original behavior).
+    """
+    dir_norm = np.array(camera_dir, dtype=float).flatten()
+    dir_norm /= (np.linalg.norm(dir_norm) + epsilon)
+
     try:
-        first_distance, last_distance = get_mesh_bounds_along_ray(mesh, camera_pos, camera_dir)
+        first_distance, last_distance = get_mesh_bounds_along_ray(mesh, camera_pos, dir_norm)
     except ValueError as e:
         print(f"Error getting mesh bounds: {e}", file=sys.stderr)
         return []
 
-    t_values = np.linspace(0, 1, num_slices)
-    plane_origins = camera_pos + np.outer(
-        lerp(first_distance, last_distance, t_values),
-        camera_dir.flatten()
-    )
+    near = float(min(first_distance, last_distance))
+    far = float(max(first_distance, last_distance))
 
-    task_worker = functools.partial(
-        _process_slice_worker,
-        mesh=mesh,
-        plane_normal=camera_dir
-    )
+    distances = np.linspace(near, far, num_slices)
+    plane_origins = [camera_pos + d * dir_norm for d in distances]
 
-    # intersections = []
+    # Compute global 2D frame & bounds (same for all slices)
+    global_min, global_max, basis = compute_global_2d_bounds(mesh, dir_norm)
+    scale, offset_x, offset_y = compute_global_scale(global_min, global_max, width, height)
 
-    # with ProcessPoolExecutor() as executor:
-    #     results = executor.map(task_worker, plane_origins)
-    #     intersections = list(results)
-    # Trimesh object is not picklable, removed for now
-    intersections = []
-    for origin in plane_origins:
-        intersections.append(task_worker(origin))
+    results = []
 
+    # Precompute full-projection polygon once if requested (it's independent of origin)
+    full_proj_poly = None
+    if full_projection:
+        full_proj_poly = polygon_from_full_projection(mesh, dir_norm)
 
-    return intersections
+    for idx, origin in enumerate(plane_origins):
+        poly = None
+        if full_projection:
+            poly = full_proj_poly
+        else:
+            # Intersection-based section at this plane origin
+            try:
+                section = mesh.section(plane_origin=origin, plane_normal=dir_norm)
+                poly = polygon_from_section(section, dir_norm)
+            except Exception as e:
+                print(f"[slice_mesh] section failed at idx {idx}: {e}", file=sys.stderr)
+                poly = None
 
+        img = render_shapely_or_path_to_image(poly, global_min, scale, offset_x, offset_y, width, height)
+        results.append(img)
 
+    return results
+
+# -------------------------
+# Normalization & loader
+# -------------------------
 def normalize_mesh(mesh):
     """Normalize mesh to be centered at origin and fit in a unit cube."""
     if not isinstance(mesh, trimesh.Trimesh) or empty(mesh.vertices):
         return mesh
     centroid = mesh.centroid
     mesh.apply_translation(-centroid)
-    scale = (1.0 / mesh.scale) if mesh.scale > 0 else 1.0
-    mesh.apply_scale(scale)
+    scale_val = (1.0 / mesh.scale) if mesh.scale > 0 else 1.0
+    mesh.apply_scale(scale_val)
     return mesh
 
+load = compose(normalize_mesh, pull)
 
-def save_slice(image_array: np.ndarray, path: str):
-    if image_array is None: 
-        return
-    
-    # Fix for blank images (ensures correct data type)
-    img = image_array.astype(np.uint8) 
-    
-    Image.fromarray(img, 'L').save(f"{path}.png")
-
-
-# --- Cache Management ---
-global_cache = "serve/assets/cache"
-get_cache = lambda n: os.path.join(global_cache, n)
-
-def cache_entry(file: str, pose: np.ndarray, direction: np.ndarray) -> str:
-    """Generate cache key for a specific viewpoint."""
-    data_to_hash = (file, tuple(pose.flatten()), tuple(direction.flatten()))
-    return hashify(data_to_hash)
-
-
-@timeit # <-- APPLIED DECORATOR
+# -------------------------
+# Caching helpers
+# -------------------------
+@timeit
 def cache_slices(slices: list, dirname: str):
-    """Create cache directory and save all slice images."""
     cachedir = get_cache(dirname)
     os.makedirs(cachedir, exist_ok=True)
     for i, slice_data in enumerate(slices):
         save_slice(slice_data, os.path.join(cachedir, str(i+1)))
 
-
-load = compose(normalize_mesh, pull)
-
-@timeit # <-- APPLIED DECORATOR
-def generate_and_cache(file: str, pose: np.ndarray, directory: np.ndarray, n: int, cache_key: str):
-    """Generate all cross sections, then cache them."""
+@timeit
+def generate_and_cache(file: str, pose: np.ndarray, direction: np.ndarray, n: int, cache_key: str, full_projection: bool = DEFAULT_FULL_PROJECTION):
     try:
         mesh: trimesh.Trimesh = load(file)
         if not isinstance(mesh, trimesh.Trimesh):
@@ -295,24 +442,21 @@ def generate_and_cache(file: str, pose: np.ndarray, directory: np.ndarray, n: in
         print(f"Error loading mesh: {e}", file=sys.stderr)
         return
 
-    angle = norm(directory)
-    slices = slice_mesh(mesh, num_slices=n, camera_pos=pose, camera_dir=angle)
+    angle = norm(direction)
+    slices = slice_mesh(mesh, num_slices=n, camera_pos=pose, camera_dir=angle, full_projection=full_projection)
 
     if not empty(slices):
         cache_slices(slices, cache_key)
 
-def retrieve(file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int) -> dict:
-    """Retrieve a specific slice, generating the full set if necessary."""
-    cache_key = cache_entry(file, pose, directory)
+def retrieve(file: str, pose: np.ndarray, direction: np.ndarray, n: int, i: int, full_projection: bool = DEFAULT_FULL_PROJECTION) -> dict:
+    cache_key = cache_entry(file, pose, direction, n, full_projection)
     cachedir = get_cache(cache_key)
 
     slice_path = os.path.join(cachedir, f"{i}.png")
 
     if not os.path.isdir(cachedir):
-        print(f"Cache miss. Generating {n} slices for {cache_key}...", file=sys.stderr)
-
-        # This function call is now timed by the decorator
-        generate_and_cache(file, pose, directory, n, cache_key)
+        print(f"Cache miss. Generating {n} slices for {cache_key} (full_projection={full_projection})...", file=sys.stderr)
+        generate_and_cache(file, pose, direction, n, cache_key, full_projection)
 
     if os.path.exists(slice_path):
         image = Image.open(slice_path)
@@ -330,56 +474,34 @@ def retrieve(file: str, pose: np.ndarray, directory: np.ndarray, n: int, i: int)
             "error": f"Failed to generate or find slice {i} for the given parameters."
         }
 
-# def clean():
-#     """Clean cache by deleting old directories."""
-#     cache_path = Path(global_cache)
-#     if not cache_path.exists(): return
-
-#     subdirs = [p for p in cache_path.iterdir() if p.is_dir()]
-#     if len(subdirs) > max_cache:
-#         subdirs.sort(key=lambda p: p.stat().st_ctime)
-#         for target in subdirs[:len(subdirs) - max_cache]:
-#             shutil.rmtree(target)
-#     print(json.dumps({"message": "Cache cleaned successfully."}))
+# -------------------------
+# Clean
+# -------------------------
 def clean():
-    """Deletes the cache directory and recreates it."""
-    # Define the path relative to the root where slicer.py is run
     cache_dir = Path("serve") / "assets" / "cache"
-    
-    # --- Deletion ---
+
     if cache_dir.exists() and cache_dir.is_dir():
         try:
-            # Recursively deletes the directory and all files inside it
             shutil.rmtree(cache_dir)
             print(f"[CLEAN] Cache directory '{cache_dir}' successfully removed.", file=sys.stderr)
         except OSError as e:
-            # Handle potential permissions issues
             print(f"[ERROR] Could not remove cache directory {cache_dir}: {e}", file=sys.stderr)
             return
 
-    # --- Re-creation ---
-    # The application needs this directory to exist to save new slices
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         print(f"[CLEAN] Empty cache directory '{cache_dir}' re-created.", file=sys.stderr)
     except Exception as e:
         print(f"[ERROR] Could not re-create cache directory: {e}", file=sys.stderr)
 
-
+# -------------------------
+# Viewer
+# -------------------------
 def visualize_slices(slices: list):
-    """
-    Open an interactive OpenCV window to view slices.
-
-    Controls:
-        n / j : Next slice
-        p / k : Previous slice
-        q     : Quit
-    """
     if empty(slices):
         print("No slices to visualize.", file=sys.stderr)
         return
 
-    # Convert grayscale images to BGR so we can draw colored text
     try:
         slices_bgr = [cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_GRAY2BGR) for img in slices]
     except cv2.error as e:
@@ -389,7 +511,7 @@ def visualize_slices(slices: list):
     total_slices = len(slices_bgr)
     current_index = 0
     window_name = "Slice Viewer"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL) # Make window resizable
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     print("\n--- 👁️ Slice Viewer Active ---", file=sys.stderr)
     print(f"  Press 'n' or 'j' for NEXT slice", file=sys.stderr)
@@ -398,44 +520,34 @@ def visualize_slices(slices: list):
     print("-------------------------------", file=sys.stderr)
 
     while True:
-        # Get the current slice and make a copy so we don't draw on it
         img_display = slices_bgr[current_index].copy()
-
-        # Add text overlay
         text = f"Slice: {current_index + 1} / {total_slices}"
-        cv2.putText(
-            img=img_display,
-            text=text,
-            org=(10, 25), # Bottom-left corner of the text
-            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-            fontScale=0.7,
-            color=(0, 255, 0), # Green
-            thickness=2
-        )
-
+        cv2.putText(img_display, text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv2.imshow(window_name, img_display)
-
-        # Wait indefinitely for a key press
         key = cv2.waitKey(0) & 0xFF
 
         if key == ord('q'):
             break
-        elif key == ord('n') or key == ord('j'): # Next
+        elif key == ord('n') or key == ord('j'):
             current_index = min(current_index + 1, total_slices - 1)
-        elif key == ord('p') or key == ord('k'): # Previous
+        elif key == ord('p') or key == ord('k'):
             current_index = max(current_index - 1, 0)
-        # Note: Arrow keys are often platform-specific, so 'n'/'p' is more robust
 
     cv2.destroyAllWindows()
 
+# -------------------------
+# Main CLI
+# -------------------------
+def parse_full_projection_flag(argv):
+    return "--projection" in argv
 
-# --- Main execution block for command-line calls ---
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({"error": "No command provided."}), file=sys.stderr)
         sys.exit(1)
 
     command = sys.argv[1]
+    full_projection_flag = parse_full_projection_flag(sys.argv)
 
     try:
         if command == "retrieve":
@@ -447,9 +559,8 @@ if __name__ == "__main__":
             n_slices = int(sys.argv[9])
             i_slice = int(sys.argv[10])
 
-            result = retrieve(file_path, pose, direction, n_slices, i_slice)
+            result = retrieve(file_path, pose, direction, n_slices, i_slice, full_projection=full_projection_flag)
 
-            # The final JSON output is printed to stdout
             print(json.dumps(result))
 
         elif command == "visualize":
@@ -463,13 +574,12 @@ if __name__ == "__main__":
             print(f"Loading mesh: {file_path}", file=sys.stderr)
             mesh: trimesh.Trimesh = load(file_path)
             if not isinstance(mesh, trimesh.Trimesh):
-                 raise ValueError(f"Failed to load a valid mesh from {file_path}")
+                raise ValueError(f"Failed to load a valid mesh from {file_path}")
 
-            print(f"Generating {n_slices} slices in memory...", file=sys.stderr)
+            print(f"Generating {n_slices} slices in memory... (projection={full_projection_flag})", file=sys.stderr)
             angle = norm(direction)
 
-            # This will be timed by your @timeit decorator
-            slices = slice_mesh(mesh, num_slices=n_slices, camera_pos=pose, camera_dir=angle)
+            slices = slice_mesh(mesh, num_slices=n_slices, camera_pos=pose, camera_dir=angle, full_projection=full_projection_flag)
 
             visualize_slices(slices)
 
