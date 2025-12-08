@@ -279,7 +279,7 @@ def cache_slices(slices: list, dirname: str):
     cachedir = get_cache(dirname)
     os.makedirs(cachedir, exist_ok=True)
     for i, slice_data in enumerate(slices):
-        save_slice(slice_data, os.path.join(cachedir, str(i)))
+        save_slice(slice_data, os.path.join(cachedir, str(i+1)))
 
 
 load = compose(normalize_mesh, pull)
