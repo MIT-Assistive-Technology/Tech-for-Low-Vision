@@ -115,17 +115,26 @@ def save_slice(image_array: np.ndarray, path: str):
 def build_plane_basis(normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Build a stable orthonormal basis (x_axis, y_axis, normal) for a plane whose normal is 'normal'.
+    Uses right-hand rule to ensure consistent orientation and prevent mirroring.
     """
     n = np.array(normal, dtype=float).flatten()
     n /= (np.linalg.norm(n) + epsilon)
 
-    # choose an arbitrary reference not parallel to n
-    ref = np.array([1.0, 0.0, 0.0])
-    if abs(np.dot(ref, n)) > 0.9:
+    # Choose reference vector based on which component of normal is smallest
+    # This ensures we get a stable perpendicular vector
+    abs_n = np.abs(n)
+    if abs_n[0] < abs_n[1] and abs_n[0] < abs_n[2]:
+        ref = np.array([1.0, 0.0, 0.0])
+    elif abs_n[1] < abs_n[2]:
         ref = np.array([0.0, 1.0, 0.0])
+    else:
+        ref = np.array([0.0, 0.0, 1.0])
 
-    x_axis = np.cross(n, ref)
+    # First basis vector perpendicular to normal
+    x_axis = np.cross(ref, n)  # Note: reversed order for correct handedness
     x_axis /= (np.linalg.norm(x_axis) + epsilon)
+    
+    # Second basis vector completes right-handed system
     y_axis = np.cross(n, x_axis)
     y_axis /= (np.linalg.norm(y_axis) + epsilon)
 
@@ -174,17 +183,8 @@ def polygon_from_section(section, plane_normal) -> Optional[Any]:
         return None
 
     try:
-        # build consistent to_2D transform matching build_plane_basis
-        normal = np.array(plane_normal, dtype=float).flatten()
-        if abs(normal[2]) < 0.9:
-            reference = np.array([0.0, 0.0, 1.0])
-        else:
-            reference = np.array([1.0, 0.0, 0.0])
-
-        x_axis = np.cross(normal, reference)
-        x_axis /= (np.linalg.norm(x_axis) + epsilon)
-        y_axis = np.cross(normal, x_axis)
-        y_axis /= (np.linalg.norm(y_axis) + epsilon)
+        # Use the same build_plane_basis function for consistency
+        x_axis, y_axis, normal = build_plane_basis(plane_normal)
 
         to_2D_transform = np.eye(4)
         to_2D_transform[:3, 0] = x_axis
@@ -266,19 +266,27 @@ def render_shapely_or_path_to_image(poly, global_min: np.ndarray, scale: float, 
         return np.array(img, dtype=np.uint8)
 
     if SHAPELY_AVAILABLE and (isinstance(poly, Polygon) or isinstance(poly, MultiPolygon)):
-        poly_list = [poly] if isinstance(poly, Polygon) else list(poly)
+        # Fixed: properly handle both Polygon and MultiPolygon
+        if isinstance(poly, Polygon):
+            poly_list = [poly]
+        elif isinstance(poly, MultiPolygon):
+            # Use .geoms property to access individual polygons in MultiPolygon
+            poly_list = list(poly.geoms)
+        else:
+            poly_list = []
+            
         for p in poly_list:
             try:
                 exterior = np.array(p.exterior.coords)
                 ext = (exterior - global_min) * scale
                 ext += np.array([offset_x, offset_y])
-                ext[:, 1] = height - ext[:, 1]
+                ext[:, 1] = height - ext[:, 1]  # Flip Y for image coordinates
                 draw.polygon([tuple(pt) for pt in ext], fill=255)
                 for interior in p.interiors:
                     h = np.array(interior.coords)
                     h = (h - global_min) * scale
                     h += np.array([offset_x, offset_y])
-                    h[:, 1] = height - h[:, 1]
+                    h[:, 1] = height - h[:, 1]  # Flip Y for image coordinates
                     draw.polygon([tuple(pt) for pt in h], fill=0)
             except Exception as e:
                 print(f"[render] shapely polygon error: {e}", file=sys.stderr)
@@ -318,7 +326,6 @@ def render_shapely_or_path_to_image(poly, global_min: np.ndarray, scale: float, 
         return np.array(img, dtype=np.uint8)
 
     return np.array(img, dtype=np.uint8)
-
 # -------------------------
 # Ray bounds helper
 # -------------------------
